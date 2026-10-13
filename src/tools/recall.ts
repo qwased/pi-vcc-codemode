@@ -39,7 +39,7 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
       "Only the current session is searchable.",
     ].join("\n"),
     promptSnippet:
-      "vcc_recall: recall earlier parts of this session before saying the context is gone. " +
+      "Recall earlier parts of this session before saying the context is gone. " +
       "One per call: query (search), range:[from, to] (entries in order), expand:[N] (full text), " +
       "mode:'touched' (files). #N is the number in summary refs like (#12).",
     parameters: Type.Object({
