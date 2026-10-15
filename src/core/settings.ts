@@ -109,7 +109,7 @@ export function loadSettings(): PiVccSettings {
 }
 
 /**
- * Ensure ~/.pi/agent/pi-vcc-config.json exists with default keys.
+ * Ensure the config file (Pi's agent dir, or PI_VCC_CONFIG_PATH) exists with default keys.
  * - File missing → create with full default block.
  * - File exists but invalid JSON → no-op (don't clobber user file).
  * - File exists and valid → fill in missing default keys, preserve existing values.

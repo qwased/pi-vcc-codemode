@@ -155,7 +155,7 @@ No step calls a model, and token counts are estimated from the session's own num
 
 ## Config
 
-Config lives at `~/.pi/agent/pi-vcc-config.json` and is created with these defaults on first load:
+Config lives at `pi-vcc-config.json` in Pi's agent directory (`~/.pi/agent`, or `$PI_CODING_AGENT_DIR` if set) and is created with these defaults on first load:
 
 ```json
 {
