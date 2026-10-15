@@ -4,6 +4,8 @@ All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
 ## [Unreleased]
 
+- Resolve the default configuration path from Pi's agent directory, respecting the host agent directory when running under Feynman or another Pi host.
+
 ## [0.10.1]
 
 ### Fixes

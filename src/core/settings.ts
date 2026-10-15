@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { homedir } from "os";
 import { dirname, join } from "path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-export const SETTINGS_PATH_DEFAULT = join(homedir(), ".pi", "agent", "pi-vcc-config.json");
+export const SETTINGS_PATH_DEFAULT = join(getAgentDir(), "pi-vcc-config.json");
 const settingsPath = (): string => process.env.PI_VCC_CONFIG_PATH ?? SETTINGS_PATH_DEFAULT;
 /** Backwards-compat export. Resolves at access time, not import time. */
 export const SETTINGS_PATH = settingsPath();
