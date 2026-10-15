@@ -4,6 +4,8 @@ All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
 ## [Unreleased]
 
+## [0.10.2]
+
 ### Fixes
 
 - **Config follows Pi's agent directory** — the default config is `pi-vcc-config.json` in Pi's agent directory: `~/.pi/agent`, unless `PI_CODING_AGENT_DIR` is set or a Pi-based host such as Feynman uses its own. If you set `PI_CODING_AGENT_DIR`, move an existing `~/.pi/agent/pi-vcc-config.json` there. `PI_VCC_CONFIG_PATH` still overrides both. By @Markusli (#53).
