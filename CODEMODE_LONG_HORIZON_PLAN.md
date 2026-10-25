@@ -128,16 +128,22 @@ pi-vcc（无 LLM 调用）
 
 ### 4.1 声明意图：先做低成本、高收益的元数据入口
 
-codemode 激活时追加工具规则：
+codemode 激活时追加两条工具规则。系统提示词本身是英文；固定标记保持 `// 目标：`，只让标记后的内容跟随用户语言。定稿文案：
 
-> 默认在脚本首行写 `// 目标：<本次预期达成的结果>`。如果使用 `@options`，首行必须保留 `@options`，目标注释写在紧接着的第二行。注释只描述意图，不写“已成功”“已修复”等结果结论。
+```text
+- Use `vcc_recall` to recover compacted or earlier session context before concluding it is unavailable; if it is not listed, call `tools.vcc_recall` from a codemode script.
+- Start each codemode script with a one-line `// 目标：<intended outcome>` in the same language as the user's request, describing intent rather than success; if you use `// @options:`, keep it first and put the intent on line 2.
+```
+
+追加条件：codemode 位于 active tools，且 `vcc_recall` 仍可调用；如果 `vcc_recall` 被禁用，只保留意图规则。两条规则在 `mode:"on"`（直接工具声明仍可见）和 `mode:"only"`（直接工具声明隐藏、由 codemode 目录列出）下都必须可见；后者尤其不能依赖 `vcc_recall` 自己的工具段，因为目录预算可能把它整段省略。
 
 实现要求：
 
 - 只检查首行，或 `@options` 后的第二行；使用固定前缀，不做自由文本语义解析。
+- 固定标记不随语言切换成 `// Goal:`；解析器可同时接受全角 `：` 和半角 `:`，但文案只展示规范形式。
 - 提取结果命名为 `declaredIntent`，不命名为 `goalFact` 或 `taskResult`。
 - 简报优先显示意图，例如 `* codemode 目标：验证长脚本可按页取回 (#N)`。
-- 没有合法注释时回退到现有短代码摘要；首阶段保留 `CODE_BRIEF_CHARS=80`，避免同时改变多个变量。
+- 没有合法注释时回退到现有短代码摘要；首阶段保留 `CODE_BRIEF_CHARS=80`，避免同时改变多个变量。提示词只要求 `one-line`，具体截断由插件端完成。
 - 意图应替换部分代码头成本，而不是在代码头之上新增一层长文本。
 - 缺失、重复、过期或与实际代码不一致都属于必须测试的情况；插件不根据注释判定完成。
 
@@ -246,7 +252,7 @@ error / durationMs / sourceRef
 工作：
 
 1. 将既有 v1.2 的四项源码改进有测试地迁入 fork：脚本显示、nested 记录、搜索文本和精简简报。
-2. 在 `before_agent_start` 中仅当 codemode 位于 active tools 时追加其 tool guideline；不覆盖完整 system prompt。
+2. 在 `before_agent_start` 中仅当 codemode 位于 active tools 且 `vcc_recall` 可调用时追加 §4.1 的两条 guideline；Pi 1.4.0 修改 `systemPromptOptions.promptGuidelines`，不替换完整 system prompt，旧宿主按能力探测降级。
 3. 实现首行/第二行意图解析，合法时替代代码头，非法时回退。
 4. 保持非 codemode 输出不变；首阶段不调整其他预算常量。
 
@@ -255,6 +261,7 @@ error / durationMs / sourceRef
 - 无 options、有 options、无注释、多行注释、中文意图和错误前缀均有测试。
 - `@options` 仍在有效位置，提示不会诱导生成不可执行脚本。
 - 冻结夹具中意图可见，缺失意图时行为与 v1.2 一致。
+- codemode 激活/未激活、`vcc_recall` 启用/禁用四种组合下 guideline 的出现符合预期；`mode:"on"` 与 `mode:"only"` 均可见。
 - 与上游相比，非 codemode 简报和 recall 无不必要变化。
 
 ### P2：原生 store 的最小状态垂直切片
