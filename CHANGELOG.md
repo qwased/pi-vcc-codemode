@@ -4,6 +4,25 @@ All notable changes to `pi-vcc-codemode` are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Codemode steps survive the brief's 8-line cap** — after keeping the last 8 tool lines of an assistant segment, codemode lines immediately before them are restored within a 1,000-character allowance. When lines are still dropped, the omission marker names the `vcc_recall` range that holds them, for example `* (2 earlier tool-call entries omitted; recall range:[1, 18])`. Direct tool lines keep upstream behavior; the marker is unchanged when no codemode line was dropped.
+- **Brief tool names no longer carry `×N`** — the number was the count of `tools.<name>(` call sites in the source, not execution count, and was easy to misread. Names still appear once, ordered by call-site count.
+- **`mode:'touched'` and `#N:path` cover codemode scripts** — nested `write`/`edit` calls are listed at the script result's entry, failed calls show `(write, error)`, and drilling into that entry reads the script's file content. Multiple operations on one path in the same entry are shown as a numbered sequence. When Pi drops nested arguments for size, the output says how many writes it cannot list.
+- **`vcc_recall` tool description** now names the size-dropped nested calls as a `touched` blind spot.
+
+### Fixed
+
+- **Prompt rules no longer render as `- - `** — the two codemode rules carried their own list bullet while Pi adds one to every rule.
+- **Nested codemode file operations stay in `[Files And Changes]`** — the summary now also extracts `read`/`write`/`edit` operations from the nested record of the messages pi-vcc summarizes, so files are listed even when Pi's own cut keeps a later window. Context-edited results that Pi omitted are still excluded.
+
+### Documentation
+
+- **README limits and cost notes** now cover the 8-line cap and recall range, nested writes in `touched`, the head-only nested search index, and the session-shape dependence of brief cost. The ambiguous 708/733 comparison is stated without claiming which side was longer.
+- **Plan P1 record** now separates visibility, behavior and cost; behavior and total-token measurement remain unmeasured.
+- **`scripts/codemode-brief-audit.ts`** — offline audit of local sessions for codemode discard rate, marker coverage, quota tradeoffs, merge pressure and cut differences; writes aggregates to `research/` only.
+- **Working notes archived under `docs/`** — planning, review, evaluation and patch records moved to `docs/plans`, `docs/reviews` and `docs/patches`; local absolute paths and session file names were redacted.
+
 ## [0.1.1] - 2026-10-25
 
 Documentation and package metadata release. Runtime behavior is unchanged from 0.1.0.

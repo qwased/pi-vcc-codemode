@@ -23,10 +23,11 @@ The agent then tends to re-read the same files, re-run the same tests, or repeat
 
 | After compaction | Upstream pi-vcc | pi-vcc-codemode |
 |---|---|---|
-| codemode call in the brief | `* codemode` | `* codemode -> read×2, bash \| goal: Verify the login flow` |
+| codemode call in the brief | `* codemode` | `* codemode -> read, bash \| goal: Verify the login flow` |
 | codemode call in recall | `codemode(code)` | a bounded script preview, 300 chars in the list and 1,500 chars in expand |
 | nested calls | not rendered; only the result text is visible | one line for the last 12 calls (32 in expand), with name, arguments, status, error and duration |
 | failed script | the visible error | the same error plus the nested calls that succeeded before it |
+| files touched | only direct tool calls | also the writes and edits inside codemode scripts, with entry indices and `#N:path` drill-down |
 | search | visible message and tool-argument text | also indexes nested names, arguments, statuses and errors, up to 2,000 chars per result |
 | model guidance | none | two prompt rules while codemode is active; the recall rule is added only while `vcc_recall` is active |
 | sessions without codemode records | upstream behavior | the same rendering, brief and search |
@@ -261,22 +262,31 @@ Config lives at `pi-vcc-config.json` in Pi's agent directory (`~/.pi/agent`, or 
 
 - **Pi 1.0 or newer** is required. The fork starts from pi-vcc 0.10.2 and drops the old automatic post-compaction continue fallback: Pi 1.0 resumes the run itself. The marker left in older sessions is still filtered.
 - **Non-codemode sessions are unchanged.** Rendering, the brief, search, cut selection and settings match upstream; golden tests pin the upstream output.
+- **The brief keeps the last 8 tool lines per assistant segment.** That cap is inherited from upstream. Codemode lines immediately before the kept tail are restored within a separate 1,000-character allowance, so distinct-intent steps usually survive; any line still dropped is named by a `vcc_recall` range in the omission marker. Earlier entries stay in the session and are reachable with `range`, `query` or the marker's range.
 - **Script previews are head-only.** Recall shows 300 chars in the list and 1,500 in expand. A long script's tail is not reachable through recall yet.
-- **Nested rendering is bounded.** The list shows the last 12 calls, expand shows the last 32. Search indexes the record up to 2,000 chars per result. Pi may also save an incomplete record; the output marks it as `[record incomplete]`.
-- **The brief's tool names are declarations.** They are scanned from `tools.<name>(...)` in the source, including text in comments, not from execution. Use the nested status for what actually happened.
+- **Nested rendering is bounded.** The list shows the last 12 calls and expand shows the last 32, while search indexes the first 2,000 chars of the record, so in a very long record the middle calls are neither shown nor searchable. Pi may also save an incomplete record; the output marks it as `[record incomplete]`.
+- **`mode:'touched'` lists files written or edited from codemode scripts**, except calls whose arguments Pi dropped for size (over 8 KB per call or 32 KB per script); the output says how many were dropped. Files written through `apply_patch` (paths inside the diff) or bash redirects remain invisible.
+- **The brief's tool names are declarations.** They are scanned from `tools.<name>(...)` in the source, including text in comments, not from execution. Repeated names appear once; use the nested status for what actually happened.
 - **No codemode store projection and no new recall parameters.** This release only makes the existing record readable and searchable.
 
 ## Verification
 
 At the 0.1.1 release, `bun test` passes 485 tests on Pi 1.4.0 and on Pi 1.0.0, and `bun run typecheck` passes on both hosts. 0.1.1 is a documentation and metadata release; runtime behavior is unchanged from 0.1.0.
 
+The unreleased codemode brief changes pass 517 tests and typecheck on both Pi 1.4.0 and Pi 1.0.0. An offline audit of 6 local codemode-only sessions (`scripts/codemode-brief-audit.ts`, aggregates only) found that the 1,000-character allowance lowers codemode-line discard from 47% (141/301 lines) to 17% (52/301); every ref of a still-dropped line fell inside the marker's range. The same audit measured merge pressure: the fresh brief's median line count grew from 75 to 86.5, leaving the previous summary a median of 33.5 of the 120 merge lines instead of 45.
+
 A small real-session check on Pi 1.4.0 (`huawei/deepseek-v4.1-flash`, codemode `mode:"only"`, `inlineBudget: 5000`, forced compaction) showed:
 
-- upstream brief `* codemode` versus fork brief `* codemode -> read, bash | goal: <intent>`; summary length 708 vs 733 chars, so the intent did not cost extra size in that pair;
+- upstream brief `* codemode` versus fork brief `* codemode -> read, bash | goal: <intent>`; the two summaries were 708 and 733 chars, a 25-char difference. The raw output naming which side was longer was not kept, but in that pair the intent line did not add a measurable size penalty;
+- cost depends on session shape: each distinct goal gets its own line, identical goals merge, and when codemode calls follow each other with no assistant text, upstream folds every `* codemode` line into one. In a 13-turn session of that shape the 0.1.1 fork's brief was about 2.2x longer (985 vs 456 chars). With assistant text between calls, upstream drops tool lines beyond 8; the current fork restores adjacent codemode lines within its 1,000-char allowance, so its brief carries more refs there;
 - with no goal instruction in the prompt, the fork's model wrote `// goal:` on its own while the upstream model did not (fork 742 vs upstream 716 chars);
 - after compaction, a codemode script called `tools.vcc_recall`, got 4 `#N` matches with nested status `ok`, and continued without redoing the work.
 
 Those are two paired runs, not a statistical result. The benefit is directional and visible, not a guarantee for every model or task.
+
+## Development notes
+
+Archived planning, review, evaluation and patch records (Chinese) live in [`docs/`](https://github.com/qwased/pi-vcc-codemode/blob/master/docs/README.md). They are historical working notes, not installation or usage documentation.
 
 ## Benchmarks
 
