@@ -1,11 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isCodemodeActive, isRecallActive } from "./active";
 
+// The host renders every prompt guideline as a list item ("- "), so these
+// strings must not carry their own bullet.
 export const CODEMODE_RECALL_GUIDELINE =
-  "- Use `vcc_recall` to recover compacted or earlier session context before concluding it is unavailable; if it is not listed, call `tools.vcc_recall` from a codemode script.";
+  "Use `vcc_recall` to recover compacted or earlier session context before concluding it is unavailable; if it is not listed, call `tools.vcc_recall` from a codemode script.";
 
 export const CODEMODE_INTENT_GUIDELINE =
-  "- Start each codemode script with a one-line `// goal: <intended outcome>` in the same language as the user's request, describing intent rather than success; if you use `// @options:`, keep it first and put the intent on line 2.";
+  "Start each codemode script with a one-line `// goal: <intended outcome>` in the same language as the user's request, describing intent rather than success; if you use `// @options:`, keep it first and put the intent on line 2.";
 
 /**
  * Guidelines for the current run: nothing when codemode is inactive, the

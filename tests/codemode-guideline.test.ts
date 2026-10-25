@@ -37,11 +37,16 @@ const run = (activeTools: string[], existing: string[] = []) => {
 describe("codemode guideline text", () => {
   test("pins the finalized wording", () => {
     expect(CODEMODE_RECALL_GUIDELINE).toBe(
-      "- Use `vcc_recall` to recover compacted or earlier session context before concluding it is unavailable; if it is not listed, call `tools.vcc_recall` from a codemode script.",
+      "Use `vcc_recall` to recover compacted or earlier session context before concluding it is unavailable; if it is not listed, call `tools.vcc_recall` from a codemode script.",
     );
     expect(CODEMODE_INTENT_GUIDELINE).toBe(
-      "- Start each codemode script with a one-line `// goal: <intended outcome>` in the same language as the user's request, describing intent rather than success; if you use `// @options:`, keep it first and put the intent on line 2.",
+      "Start each codemode script with a one-line `// goal: <intended outcome>` in the same language as the user's request, describing intent rather than success; if you use `// @options:`, keep it first and put the intent on line 2.",
     );
+  });
+
+  test("the host owns the list bullet, so the rules do not start with one", () => {
+    expect(CODEMODE_RECALL_GUIDELINE.startsWith("- ")).toBe(false);
+    expect(CODEMODE_INTENT_GUIDELINE.startsWith("- ")).toBe(false);
   });
 });
 
