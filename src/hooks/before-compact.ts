@@ -11,6 +11,7 @@ import { parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-
 import { loadSettings, type PiVccSettings } from "../core/settings";
 import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageContentTokens, estimateTokensFromChars } from "../core/token-estimate";
 import { appendCodemodeGuidelines } from "../codemode/guideline";
+import { nestedFileOps, nestedFileOpsCount } from "../codemode/file-ops";
 import type { PiVccCompactionDetails } from "../details";
 import type { CompactionReason } from "../types";
 
@@ -729,6 +730,18 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
 
     const config = settings;
 
+    // Pi extracts host file operations from the window it would summarize. Our
+    // cut can summarize an earlier window, so nested codemode writes in that
+    // gap would otherwise disappear from [Files And Changes]. With no nested
+    // operations the arrays below stay byte-identical to the host's.
+    const nestedOps = nestedFileOps(agentMessages);
+    let readFileOps = [...preparation.fileOps.read];
+    let modifiedFileOps = [...preparation.fileOps.written, ...preparation.fileOps.edited];
+    if (nestedFileOpsCount(nestedOps) > 0) {
+      readFileOps = [...new Set([...readFileOps, ...nestedOps.read])];
+      modifiedFileOps = [...new Set([...modifiedFileOps, ...nestedOps.written, ...nestedOps.edited])];
+    }
+
     // Ranked compaction: keep the highest-signal blocks under a token budget
     // instead of the old unranked compile() (fixed 120-line cap). The token
     // budget is converted to a char budget via the session's calibrated
@@ -753,8 +766,8 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       sourceIndices,
       previousSummary: preparation.previousSummary,
       fileOps: {
-        readFiles: [...preparation.fileOps.read],
-        modifiedFiles: [...preparation.fileOps.written, ...preparation.fileOps.edited],
+        readFiles: readFileOps,
+        modifiedFiles: modifiedFileOps,
       },
       trackCommands: settings.trackCommands,
       ranking: {

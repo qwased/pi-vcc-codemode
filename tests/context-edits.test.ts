@@ -179,7 +179,9 @@ describe.skipIf(typeof (piCore as any).buildSessionProjection !== "function")("c
     expect(second.summary).toContain("First retained fact.");
     expect(second.summary).not.toContain("OMITTED_CODEMODE_REPLAY");
     expect(second.summary).not.toContain("Script failed");
-    expect(second.summary).not.toContain("side-effect.ts");
+    // The failed script's write ran before the failure and is inside this
+    // summary's window; nested file operations are summarized by design.
+    expect(second.summary).toContain("src/side-effect.ts");
     expect(second.summary).not.toContain("pi-vcc.current-task");
 
     const entries = session.getBranch();
@@ -195,6 +197,37 @@ describe.skipIf(typeof (piCore as any).buildSessionProjection !== "function")("c
     const refs = [...second.summary.matchAll(/\(#(\d+)\)/g)].map((match) => Number(match[1]));
     const indexed = new Set(indexMap.values());
     for (const ref of refs) expect(indexed.has(ref)).toBe(true);
+  });
+
+  test("a context-edited nested result does not resurrect its file operation", () => {
+    const session = piCore.SessionManager.inMemory(dir) as any;
+    session.appendMessage({ role: "user", content: [{ type: "text", text: "First task" }], timestamp: 0 });
+    session.appendMessage({
+      ...assistant(""),
+      content: [{
+        type: "toolCall",
+        id: "call_omitted",
+        name: "codemode",
+        arguments: { code: codemodeScript("omitted side effect", "await tools.write({ path: 'src/omitted-side-effect.ts', content: 'x' });") },
+      }],
+    } as any);
+    const omittedResult = session.appendMessage(codemodeResult({
+      toolCallId: "call_omitted",
+      calls: [nestedCall({
+        id: "call_omitted/1",
+        name: "write",
+        arguments: { path: "src/omitted-side-effect.ts", content: "x" },
+        status: "ok",
+      })],
+    }) as any);
+    session.appendContextEdit(omittedResult, null);
+    session.appendMessage({ role: "user", content: [{ type: "text", text: "Next task" }], timestamp: 0 });
+    session.appendMessage(assistant("Kept fact."));
+
+    const result = compact(session, 1);
+    expect(result).toBeDefined();
+    expect(result.summary).toContain("First task");
+    expect(result.summary).not.toContain("omitted-side-effect.ts");
   });
 
   test("budget cuts use replacement sizes and never start at a tool result", () => {

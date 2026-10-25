@@ -5,6 +5,8 @@ export interface NestedCallFixture {
   id: string;
   name: string;
   arguments?: Record<string, unknown>;
+  /** Set by Pi instead of `arguments` when the call exceeds the record size limit. */
+  argumentsBytes?: number;
   status: "ok" | "error" | "unfinished";
   durationMs?: number;
   error?: string;
