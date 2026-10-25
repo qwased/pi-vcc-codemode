@@ -4,6 +4,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { applyTailBudget, buildOwnCut, registerBeforeCompactHook } from "../src/hooks/before-compact";
+import { buildGlobalIndexById } from "../src/core/global-indices";
+import {
+  codemodeResult,
+  codemodeScript,
+  codemodeStore,
+  nestedCall,
+} from "./codemode-fixtures";
 
 // Context edits/projection are host features; older supported Pi versions still
 // exercise the unchanged legacy collector in the rest of the suite.
@@ -105,6 +112,89 @@ describe.skipIf(typeof (piCore as any).buildSessionProjection !== "function")("c
     expect(second.summary).not.toContain("OLD_OMITTED_RESPONSE");
     expect(second.summary).toContain("First retained fact.");
     expect(second.summary).toContain("New retained fact.");
+  });
+
+  test("codemode-store entries stay out of #N and a previous summary survives a context-edited replay", () => {
+    const session = piCore.SessionManager.inMemory(dir) as any;
+    const user = (text: string) => ({
+      role: "user",
+      content: [{ type: "text", text }],
+      timestamp: 0,
+    } as any);
+    const codemodeTurn = (code: string, id: string) => ({
+      ...assistant(""),
+      content: [{ type: "toolCall", id, name: "codemode", arguments: { code } }],
+    } as any);
+
+    session.appendMessage(user("Investigate authentication"));
+    session.appendMessage(codemodeTurn(
+      codemodeScript("验证 store 回放", "await tools.write({ path: 'src/a.ts', content: 'x' });"),
+      "call_1",
+    ));
+    session.appendMessage(codemodeResult({
+      toolCallId: "call_1",
+      text: "Script completed\nwrote src/a.ts",
+      calls: [nestedCall({ id: "call_1/1", name: "write", arguments: { path: "src/a.ts" }, status: "ok" })],
+    }) as any);
+    session.appendCustomEntry("codemode-store", codemodeStore({
+      "pi-vcc.current-task": { version: 1, goal: "验证 store 回放", next: "continue" },
+    }));
+    session.appendMessage(assistant("First retained fact."));
+
+    const first = compact(session);
+    expect(first).toBeDefined();
+    const firstCompactionId = session.appendCompaction(
+      first.summary,
+      first.firstKeptEntryId,
+      first.tokensBefore,
+      first.details,
+      true,
+    );
+
+    session.appendMessage(user("Next task"));
+    session.appendMessage(codemodeTurn(
+      codemodeScript("失败脚本", "await tools.bash({ command: 'false' });", false),
+      "call_2",
+    ));
+    session.appendMessage(codemodeResult({
+      toolCallId: "call_2",
+      text: "Script failed\nError: boom",
+      isError: true,
+      calls: [
+        nestedCall({ id: "call_2/1", name: "write", arguments: { path: "src/side-effect.ts" }, status: "ok" }),
+        nestedCall({ id: "call_2/2", name: "bash", arguments: { command: "false" }, status: "error", error: "exit 1" }),
+      ],
+    }) as any);
+    session.appendCustomEntry("codemode-store", codemodeStore({}, ["pi-vcc.current-task"]));
+    const omitted = session.appendMessage(assistant("OMITTED_CODEMODE_REPLAY"));
+    session.appendContextEdit(omitted, null);
+    session.appendMessage(user("Continue"));
+    session.appendMessage(assistant("Second retained fact."));
+
+    const second = compact(session, 1);
+    expect(second).toBeDefined();
+    expect(second.details.previousSummaryUsed).toBe(true);
+    expect(second.details.sourceMessageCount).toBeGreaterThan(0);
+    expect(second.firstKeptEntryId).toBeTruthy();
+    expect(second.summary).toContain("First retained fact.");
+    expect(second.summary).not.toContain("OMITTED_CODEMODE_REPLAY");
+    expect(second.summary).not.toContain("Script failed");
+    expect(second.summary).not.toContain("side-effect.ts");
+    expect(second.summary).not.toContain("pi-vcc.current-task");
+
+    const entries = session.getBranch();
+    const indexMap = buildGlobalIndexById(entries);
+    const messageEntries = entries.filter((entry: any) => entry.type === "message" && entry.message);
+    const storeEntries = entries.filter((entry: any) => entry.type === "custom" && entry.customType === "codemode-store");
+    expect(storeEntries).toHaveLength(2);
+    for (const store of storeEntries) expect(indexMap.has(store.id)).toBe(false);
+    expect(indexMap.has(firstCompactionId)).toBe(false);
+    expect(indexMap.has(second.firstKeptEntryId)).toBe(true);
+    expect(indexMap.get(messageEntries.at(-1)!.id)).toBe(messageEntries.length - 1);
+
+    const refs = [...second.summary.matchAll(/\(#(\d+)\)/g)].map((match) => Number(match[1]));
+    const indexed = new Set(indexMap.values());
+    for (const ref of refs) expect(indexed.has(ref)).toBe(true);
   });
 
   test("budget cuts use replacement sizes and never start at a tool result", () => {
