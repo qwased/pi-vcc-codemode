@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "@sting8k/pi-vcc",
+      "name": "pi-vcc-codemode",
       "devDependencies": {
         "@types/node": "26.6.5",
         "typescript": "7.0.2",
