@@ -69,7 +69,7 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
         Type.Union([
           Type.Literal("hybrid"),
           Type.Literal("touched"),
-        ], { description: "hybrid (default) = normal recall; touched = files worked on, by path, with entry indices. The touched list misses files written via apply_patch (paths inside the diff) or bash redirects." }),
+        ], { description: "hybrid (default) = normal recall; touched = files worked on, by path, with entry indices. The touched list misses files written via apply_patch (paths inside the diff) or bash redirects, and nested writes whose arguments Pi dropped for size; the output says how many were dropped." }),
       ),
     }),
     // Runs before pi validates the schema, so repairable mistakes never reach the agent as errors.

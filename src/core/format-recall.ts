@@ -59,7 +59,7 @@ export function formatTouchedOutput(
   const lines = pageFiles.map((tf) => {
     const displayPath = shortPath(tf.path);
     const indices = tf.entries
-      .map((e) => `#${e.index} (${e.toolName})`)
+      .map((e) => `#${e.index} (${e.toolName}${e.status ? `, ${e.status}` : ""})`)
       .join(", ");
     return `  ${displayPath}    ${indices}`;
   });

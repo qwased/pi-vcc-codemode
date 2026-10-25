@@ -5,7 +5,9 @@ import { getActiveLineageEntryIds, type LineageSessionManagerLike } from "./line
 import { expandEntryFile } from "./drill-down";
 import type { RecallScope } from "./recall-scope";
 import type { RecallRequest } from "./recall-request";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message, NestedToolCalls } from "@earendil-works/pi-ai";
+import { isCodemodeMessage } from "../codemode/active";
+import type { RenderedEntry } from "./render-entries";
 
 export const SEARCH_PAGE_SIZE = 5;
 export const RANGE_PAGE_SIZE = 20;
@@ -331,17 +333,73 @@ const runSearch = (query: string, page: number, view: RecallView, hints: RecallP
 
 const WRITES_FILE = /write|edit|patch/i;
 
+/**
+ * Nested file writes whose arguments Pi dropped because the record exceeded
+ * its size limits. `touched` cannot name their paths, so it reports how many
+ * there are and which script-call entries to expand.
+ */
+const sizeOmittedWrites = (
+  messages: Message[],
+  rendered: RenderedEntry[],
+): { count: number; scriptEntries: number[] } => {
+  const callIndexById = new Map<string, number>();
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+    for (const part of msg.content) {
+      if (part?.type === "toolCall" && typeof part.id === "string") {
+        callIndexById.set(part.id, rendered[i]?.index ?? i);
+      }
+    }
+  }
+
+  const byEntry = new Map<number, number>();
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!isCodemodeMessage(msg)) continue;
+    const resultIndex = rendered[i]?.index ?? i;
+    const scriptIndex = msg.role === "toolResult"
+      ? callIndexById.get(msg.toolCallId) ?? resultIndex
+      : resultIndex;
+    const calls = (msg as { nestedCalls?: NestedToolCalls }).nestedCalls?.calls ?? [];
+    for (const call of calls) {
+      if (!WRITES_FILE.test(call.name) || call.arguments !== undefined) continue;
+      if (typeof call.argumentsBytes !== "number") continue;
+      byEntry.set(scriptIndex, (byEntry.get(scriptIndex) ?? 0) + 1);
+    }
+  }
+  const scriptEntries = [...byEntry.keys()].sort((a, b) => a - b);
+  return { count: [...byEntry.values()].reduce((sum, n) => sum + n, 0), scriptEntries };
+};
+
+const sizeOmittedNote = (omitted: { count: number; scriptEntries: number[] }): string => {
+  const { count, scriptEntries } = omitted;
+  if (count === 0) return "";
+  const shown = scriptEntries.slice(0, 5).map((n) => `#${n}`).join(", ");
+  const more = scriptEntries.length > 5 ? `, +${scriptEntries.length - 5} more` : "";
+  const record = count === 1 ? "its" : "their";
+  const calls = count === 1 ? "call" : "calls";
+  return `\n--- ${count} nested write/edit ${calls} not listed: Pi dropped ${record} arguments for size ` +
+    `(script calls ${shown}${more}); use expand:[${scriptEntries[0]}] to read the script and its result ---`;
+};
+
 /** Files worked on, plus a ready #N:path call for the first file on the page that was written. */
 const runTouched = (page: number | undefined, view: RecallView): string => {
   const { rendered, rawMessages } = view.load(false);
   const touched = getTouchedFiles(rawMessages, rendered);
-  const text = formatTouchedOutput(touched, page);
+  const omitted = sizeOmittedWrites(rawMessages, rendered);
+  // "No file operations" would be false when every write lost its arguments.
+  let text = touched.length === 0 && omitted.count > 0
+    ? "No listable file operations found in session history."
+    : formatTouchedOutput(touched, page);
   const start = (Math.max(1, page ?? 1) - 1) * TOUCHED_PAGE_SIZE;
   for (const tf of touched.slice(start, start + TOUCHED_PAGE_SIZE)) {
-    const write = [...tf.entries].reverse().find((e) => WRITES_FILE.test(e.toolName));
+    // A failed nested call has no readable content to drill into.
+    const write = [...tf.entries].reverse().find((e) => !e.status && WRITES_FILE.test(e.toolName));
     if (!write) continue;
     const name = tf.path.replace(/\\/g, "/").split("/").pop();
-    return `${text}\n--- File content at an entry: query:'#${write.index}:${name}' ---`;
+    text += `\n--- File content at an entry: query:'#${write.index}:${name}' ---`;
+    break;
   }
-  return text;
+  return text + sizeOmittedNote(omitted);
 };

@@ -36,30 +36,69 @@ interface ContentBearingCall {
  * one content field (content, edits, oldText, newText).
  * Uses the shared isContentBearing() heuristic from content.ts.
  */
+function toContentBearingCall(name: string, args: Record<string, unknown>): ContentBearingCall | null {
+  if (!isContentBearing(args)) return null;
+  const path = extractPath(args);
+  if (!path) return null;
+  const entry: ContentBearingCall = { name, path };
+  if (typeof args.content === "string") entry.content = args.content;
+  if (Array.isArray(args.edits)) {
+    entry.edits = args.edits.filter(
+      (e: unknown): e is { oldText?: string; newText?: string } =>
+        e !== null && typeof e === "object",
+    );
+  }
+  if (typeof args.oldText === "string" && !Array.isArray(args.edits))
+    entry.oldText = args.oldText;
+  if (typeof args.newText === "string" && !Array.isArray(args.edits))
+    entry.newText = args.newText;
+  return entry;
+}
+
 function findContentBearingCalls(content: unknown[]): ContentBearingCall[] {
   if (!Array.isArray(content)) return [];
   const results: ContentBearingCall[] = [];
   for (const part of content) {
     if (!part || (part as any).type !== "toolCall") continue;
-    const args = (part as any).arguments ?? {};
-    if (!isContentBearing(args)) continue;
-    const path = extractPath(args);
-    if (!path) continue;
-    const entry: ContentBearingCall = { name: (part as any).name ?? "", path };
-    if (typeof args.content === "string") entry.content = args.content;
-    if (Array.isArray(args.edits)) {
-      entry.edits = args.edits.filter(
-        (e: unknown): e is { oldText?: string; newText?: string } =>
-          e !== null && typeof e === "object",
-      );
-    }
-    if (typeof args.oldText === "string" && !Array.isArray(args.edits))
-      entry.oldText = args.oldText;
-    if (typeof args.newText === "string" && !Array.isArray(args.edits))
-      entry.newText = args.newText;
-    results.push(entry);
+    const entry = toContentBearingCall(
+      (part as any).name ?? "",
+      ((part as any).arguments ?? {}) as Record<string, unknown>,
+    );
+    if (entry) results.push(entry);
   }
   return results;
+}
+
+/**
+ * File calls a codemode script made, recorded on its tool result. Calls whose
+ * arguments Pi dropped for size carry no content and are skipped.
+ */
+function findNestedContentBearingCalls(msg: any): ContentBearingCall[] {
+  const calls = msg?.nestedCalls?.calls;
+  if (!Array.isArray(calls)) return [];
+  const results: ContentBearingCall[] = [];
+  for (const call of calls) {
+    if (!call?.arguments) continue;
+    const entry = toContentBearingCall(call.name ?? "", call.arguments as Record<string, unknown>);
+    if (entry) results.push(entry);
+  }
+  return results;
+}
+
+function toolCallBody(tc: ContentBearingCall): string {
+  if (tc.content) return tc.content;
+  if (tc.edits) {
+    return tc.edits
+      .map(
+        (e, i) =>
+          `--- edit ${i + 1} ---\n${e.oldText ?? ""}\n--- becomes ---\n${e.newText ?? ""}`,
+      )
+      .join("\n\n");
+  }
+  if (tc.oldText && tc.newText) {
+    return `--- old ---\n${tc.oldText}\n--- new ---\n${tc.newText}`;
+  }
+  return "(no file content found in tool call arguments)";
 }
 
 /** Format content for display with optional offset/limit slicing.
@@ -68,27 +107,13 @@ function findContentBearingCalls(content: unknown[]): ContentBearingCall[] {
  * When offset/limit given, shows a window with "Lines X-Y (of Z)" header.
  * When neither, shows preview (first 30 lines) with truncation hint.
  */
-function formatToolCallContent(
-  tc: ContentBearingCall,
+function formatBody(
+  path: string,
+  toolName: string,
+  body: string,
   entryIndex: number,
   options?: { full?: boolean; offset?: number; limit?: number },
 ): string {
-  let body: string;
-  if (tc.content) {
-    body = tc.content;
-  } else if (tc.edits) {
-    body = tc.edits
-      .map(
-        (e, i) =>
-          `--- edit ${i + 1} ---\n${e.oldText ?? ""}\n--- becomes ---\n${e.newText ?? ""}`,
-      )
-      .join("\n\n");
-  } else if (tc.oldText && tc.newText) {
-    body = `--- old ---\n${tc.oldText}\n--- new ---\n${tc.newText}`;
-  } else {
-    body = "(no file content found in tool call arguments)";
-  }
-
   const full = options?.full ?? false;
   const offset = options?.offset;
   const limit = options?.limit;
@@ -101,15 +126,15 @@ function formatToolCallContent(
     // Full content: capped at 50KB
     if (Buffer.byteLength(body, "utf8") > MAX_FULL_BYTES) {
       const truncated = body.slice(0, MAX_FULL_BYTES);
-      return `File: ${tc.path}
-Tool: ${tc.name}
+      return `File: ${path}
+Tool: ${toolName}
 
 ${truncated}
 
-... (${Buffer.byteLength(body, "utf8") - MAX_FULL_BYTES} more bytes — file exceeds 50KB display limit. Use #${entryIndex}:${tc.path}:${previewLimit} for next page.)`;
+... (${Buffer.byteLength(body, "utf8") - MAX_FULL_BYTES} more bytes — file exceeds 50KB display limit. Use #${entryIndex}:${path}:${previewLimit} for next page.)`;
     }
-    return `File: ${tc.path}
-Tool: ${tc.name}
+    return `File: ${path}
+Tool: ${toolName}
 
 ${body}`;
   }
@@ -123,18 +148,18 @@ ${body}`;
     const displayStart = startLine + 1; // 1-indexed for user display
 
     if (visible.length === 0) {
-      return `Offset ${startLine} is beyond file length ${totalLines}. Use #${entryIndex}:${tc.path} for the first ${previewLimit} lines.`;
+      return `Offset ${startLine} is beyond file length ${totalLines}. Use #${entryIndex}:${path} for the first ${previewLimit} lines.`;
     }
 
-    let result = `File: ${tc.path}
-Tool: ${tc.name}
+    let result = `File: ${path}
+Tool: ${toolName}
 Lines ${displayStart}-${endLine} (of ${totalLines}):
 
 `;
     result += visible.join("\n");
 
     if (endLine < totalLines) {
-      result += `\n\n--- Use #${entryIndex}:${tc.path}:${endLine} or #${entryIndex}:${tc.path}:${endLine}:${maxLines} for next ${maxLines} lines, #${entryIndex}:${tc.path}:full for complete ---`;
+      result += `\n\n--- Use #${entryIndex}:${path}:${endLine} or #${entryIndex}:${path}:${endLine}:${maxLines} for next ${maxLines} lines, #${entryIndex}:${path}:full for complete ---`;
     } else if (offset > 0) {
       result += `\n\n(End of file)`;
     }
@@ -145,18 +170,50 @@ Lines ${displayStart}-${endLine} (of ${totalLines}):
   // Default preview mode: first ${previewLimit} lines
   if (totalLines > previewLimit) {
     const preview = allLines.slice(0, previewLimit).join("\n");
-    return `File: ${tc.path}
-Tool: ${tc.name}
+    return `File: ${path}
+Tool: ${toolName}
 
 ${preview}
 
-...(${totalLines - previewLimit} more lines — use #${entryIndex}:${tc.path}:full for complete content, or #${entryIndex}:${tc.path}:${previewLimit} for next ${previewLimit} lines)`;
+...(${totalLines - previewLimit} more lines — use #${entryIndex}:${path}:full for complete content, or #${entryIndex}:${path}:${previewLimit} for next ${previewLimit} lines)`;
   }
 
-  return `File: ${tc.path}
-Tool: ${tc.name}
+  return `File: ${path}
+Tool: ${toolName}
 
 ${body}`;
+}
+
+function formatToolCallContent(
+  tc: ContentBearingCall,
+  entryIndex: number,
+  options?: { full?: boolean; offset?: number; limit?: number },
+): string {
+  return formatBody(tc.path, tc.name, toolCallBody(tc), entryIndex, options);
+}
+
+/**
+ * Several operations on one path in a single entry (a codemode script often
+ * writes and then edits the same file) are one file view, not an ambiguous
+ * match. Each operation gets a heading; preview, full and paging apply to the
+ * combined body.
+ */
+function formatCallGroup(
+  calls: ContentBearingCall[],
+  entryIndex: number,
+  options?: { full?: boolean; offset?: number; limit?: number },
+): string {
+  if (calls.length === 1) return formatToolCallContent(calls[0], entryIndex, options);
+  const body = calls
+    .map((tc, i) => `--- ${i + 1}/${calls.length}: ${tc.name} ---\n${toolCallBody(tc)}`)
+    .join("\n\n");
+  return formatBody(
+    calls[0].path,
+    calls.map((tc) => tc.name).join(" + "),
+    body,
+    entryIndex,
+    options,
+  );
 }
 
 // ── Parse drill-down query ────────────────────────────────────────────────
@@ -259,7 +316,9 @@ export function expandEntryFile(
 
   const msg = rawMessages[pos];
   const content = msg.content as unknown[];
-  const calls = findContentBearingCalls(content);
+  const topLevelCalls = findContentBearingCalls(content);
+  const nestedCalls = findNestedContentBearingCalls(msg);
+  const calls = [...topLevelCalls, ...nestedCalls];
 
   // Special case: #42:file keyword
   if (pathPattern === "file") {
@@ -286,16 +345,41 @@ export function expandEntryFile(
     return `No file content found in entry #${entryIndex} for "${pathPattern}".`;
   }
 
-  if (matched.length > 1) {
-    // Ambiguous match — list options instead of silently picking the first
-    const items = matched.map(
-      (tc) => `  [#${entryIndex}:${tc.path}] ${tc.name}(${tc.path})`,
+  // Direct tool calls keep upstream's ambiguity handling exactly.
+  if (nestedCalls.length === 0) {
+    if (matched.length > 1) {
+      const items = matched.map(
+        (tc) => `  [#${entryIndex}:${tc.path}] ${tc.name}(${tc.path})`,
+      );
+      return `Entry #${entryIndex} has ${matched.length} file operations matching "${pathPattern}":
+${items.join("\n")}
+
+Use #${entryIndex}:<more-specific-path> to drill into a specific file.`;
+    }
+    return formatToolCallContent(matched[0], entryIndex, { full, offset, limit });
+  }
+
+  // One path with several nested calls is a sequence of operations on that
+  // file, not an ambiguous match; different paths still list for a more
+  // specific query.
+  const groups = new Map<string, ContentBearingCall[]>();
+  for (const tc of matched) {
+    const group = groups.get(tc.path);
+    if (group) group.push(tc);
+    else groups.set(tc.path, [tc]);
+  }
+
+  if (groups.size > 1) {
+    const items = [...groups].map(
+      ([path, group]) =>
+        `  [#${entryIndex}:${path}] ${group.map((tc) => `${tc.name}(${path})`).join(", ")}`,
     );
-    return `Entry #${entryIndex} has ${matched.length} file operations matching "${pathPattern}":
+    const files = groups.size < matched.length ? ` in ${groups.size} files` : "";
+    return `Entry #${entryIndex} has ${matched.length} file operations matching "${pathPattern}"${files}:
 ${items.join("\n")}
 
 Use #${entryIndex}:<more-specific-path> to drill into a specific file.`;
   }
 
-  return formatToolCallContent(matched[0], entryIndex, { full, offset, limit });
+  return formatCallGroup([...groups.values()][0], entryIndex, { full, offset, limit });
 }

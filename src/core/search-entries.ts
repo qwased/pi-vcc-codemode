@@ -1,4 +1,4 @@
-import type { Message, ToolCall } from "@earendil-works/pi-ai";
+import type { Message, NestedToolCalls, ToolCall } from "@earendil-works/pi-ai";
 import { isCodemodeMessage } from "../codemode/active";
 import { nestedCallsSearchText } from "../codemode/search";
 import type { RenderedEntry } from "./render-entries";
@@ -28,6 +28,8 @@ export interface SearchResult {
 export interface FileTouch {
   index: number;
   toolName: string;
+  /** Nested-call status when it is not "ok" (e.g. "error", "unfinished"). */
+  status?: string;
 }
 
 /** Aggregated view of a file touched across multiple entries. */
@@ -329,26 +331,46 @@ const fullText = (msg: Message): string => {
  * Compute file indicators from a message, counting non-empty content lines
  * per content-bearing file call. Shape-based — no tool-name allowlist.
  *
+ * A codemode tool result carries the file calls its script made in
+ * `nestedCalls`; those are attributed to the result's own entry.
+ *
  * Ported from pi-blackhole (https://github.com/k0valik/pi-blackhole, MIT) by
  * k0valik — a pi-vcc derivative.
  */
-export function getFileIndicators(msg: Message): { toolName: string; path: string; lineCount: number }[] {
-  if (!msg?.content || typeof msg.content === "string") return [];
-  const indicators: { toolName: string; path: string; lineCount: number }[] = [];
-  for (const part of msg.content) {
-    if (!part || typeof part !== "object" || part.type !== "toolCall") continue;
-    const args = part.arguments as Record<string, unknown>;
-    if (!isContentBearing(args)) continue;
+export function getFileIndicators(
+  msg: Message,
+): { toolName: string; path: string; lineCount: number; status?: string }[] {
+  const indicators: { toolName: string; path: string; lineCount: number; status?: string }[] = [];
+  const add = (name: string, args: Record<string, unknown>, status?: string) => {
+    if (!isContentBearing(args)) return;
     const path = ["path", "filePath", "file_path", "file"]
       .map((k) => args[k])
       .find((v): v is string => typeof v === "string")!;
     const totalText = extractToolCallText(args);
     const nonEmpty = totalText.split("\n").filter((l) => l.trim().length > 0);
     indicators.push({
-      toolName: part.name || "",
+      toolName: name || "",
       path,
       lineCount: nonEmpty.length,
+      ...(status && status !== "ok" ? { status } : {}),
     });
+  };
+
+  if (msg?.content && typeof msg.content !== "string") {
+    for (const part of msg.content) {
+      if (!part || typeof part !== "object" || part.type !== "toolCall") continue;
+      add(part.name || "", part.arguments as Record<string, unknown>);
+    }
+  }
+
+  if (msg && isCodemodeMessage(msg)) {
+    const calls = (msg as { nestedCalls?: NestedToolCalls }).nestedCalls?.calls ?? [];
+    for (const call of calls) {
+      const args = call.arguments as Record<string, unknown> | undefined;
+      // No arguments means Pi dropped them for size; the path is gone too.
+      if (!args) continue;
+      add(call.name, args, call.status);
+    }
   }
   return indicators;
 }
@@ -372,7 +394,11 @@ export function getTouchedFiles(
       if (!map.has(fm.path)) {
         map.set(fm.path, { path: fm.path, entries: [] });
       }
-      (map.get(fm.path) as TouchedFile).entries.push({ index, toolName: fm.toolName });
+      (map.get(fm.path) as TouchedFile).entries.push({
+        index,
+        toolName: fm.toolName,
+        ...(fm.status ? { status: fm.status } : {}),
+      });
     }
   }
   return Array.from(map.values());
