@@ -797,6 +797,20 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       messagesPreviewTail: agentMessages.slice(-3).map((m: any) => ({ role: m.role, preview: previewContent(m.content) })),
       convertedMessages: messages.length,
       firstKeptEntryId,
+      hostFirstKeptEntryId: preparation.firstKeptEntryId,
+      fileOps: {
+        host: {
+          read: [...preparation.fileOps.read].length,
+          written: [...preparation.fileOps.written].length,
+          edited: [...preparation.fileOps.edited].length,
+        },
+        nested: {
+          read: nestedOps.read.size,
+          written: nestedOps.written.size,
+          edited: nestedOps.edited.size,
+        },
+        passed: { read: readFileOps.length, modified: modifiedFileOps.length },
+      },
       cutWindow,
       tokensBefore: preparation.tokensBefore,
       tokenEstimate,
