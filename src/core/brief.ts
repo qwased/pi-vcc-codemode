@@ -250,9 +250,35 @@ export interface BriefLine {
 }
 
 /**
+ * Injection points for measurement: the audit script builds the same brief
+ * with and without the per-segment limits. Production callers use defaults.
+ */
+export interface BriefBuildOptions {
+  /** Tool lines kept per [assistant] segment (default 8). */
+  toolCallsPerTurn?: number;
+  /**
+   * Extra chars of codemode-only lines restored immediately before the kept
+   * tail. 0 disables restoration (the pre-quota behavior).
+   */
+  codemodeSegmentChars?: number;
+}
+
+/**
+ * Char allowance for codemode lines restored just before the kept tail. The
+ * 8-line cap stays untouched for direct tool calls; this only stops a
+ * codemode-heavy segment from losing its earlier intents while the ranked
+ * brief had already paid for their blocks. Initial value from the review's
+ * measurements; the audit script reports discard rates at other values.
+ */
+export const CODEMODE_SEGMENT_CHARS = 1000;
+
+/**
  * Build BriefLine sections from NormalizedBlocks.
  */
-export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
+export const buildBriefSections = (
+  blocks: NormalizedBlock[],
+  options: BriefBuildOptions = {},
+): BriefLine[] => {
   const sections: BriefLine[] = [];
   let lastHeader = "";
 
@@ -355,21 +381,42 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
   // Cap tool calls per [assistant] turn — keep tail (latest actions tend to
   // be the deciding edits/writes; head is usually exploration noise).
   const TOOL_CALLS_PER_TURN = 8;
+  const toolLimit = options.toolCallsPerTurn ?? TOOL_CALLS_PER_TURN;
+  const codemodeQuota = options.codemodeSegmentChars ?? CODEMODE_SEGMENT_CHARS;
   for (const sec of sections) {
     if (sec.header !== "[assistant]") continue;
     const toolIdxs = sec.lines
       .map((l, i) => (l.startsWith("* ") ? i : -1))
       .filter((i) => i >= 0);
-    if (toolIdxs.length <= TOOL_CALLS_PER_TURN) continue;
-    const dropCount = toolIdxs.length - TOOL_CALLS_PER_TURN;
+    if (toolIdxs.length <= toolLimit) continue;
+    const keepStart = toolIdxs.length - toolLimit;
+    // The quota only adds codemode lines adjacent to the kept tail, so every
+    // discarded line stays earlier than every kept one and the marker's
+    // "earlier" wording remains true. Non-codemode segments never change.
+    let restoreStart = keepStart;
+    let restoredChars = 0;
+    while (restoreStart > 0) {
+      const line = sec.lines[toolIdxs[restoreStart - 1]];
+      if (!isCodemodeBriefLine(line)) break;
+      if (restoredChars + line.length > codemodeQuota) break;
+      restoredChars += line.length;
+      restoreStart--;
+    }
+    if (restoreStart === 0) continue;
+    const dropCount = restoreStart;
     const dropSet = new Set(toolIdxs.slice(0, dropCount));
     const firstKeptToolIdx = toolIdxs[dropCount];
+    const marker = omissionMarker(
+      toolIdxs.slice(0, dropCount).map((i) => sec.lines[i]),
+      sec.lines[firstKeptToolIdx],
+      dropCount,
+    );
     const next: string[] = [];
     let inserted = false;
     for (let i = 0; i < sec.lines.length; i++) {
       if (dropSet.has(i)) continue;
       if (!inserted && i === firstKeptToolIdx) {
-        next.push(`* (${dropCount} earlier tool-call entries omitted)`);
+        next.push(marker);
         inserted = true;
       }
       next.push(sec.lines[i]);
@@ -378,6 +425,35 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
   }
 
   return sections;
+};
+
+const TRAILING_REFS_RE = /\((#\d+(?:, #\d+)*)\)(?: x\d+)?$/;
+
+/** `#N` refs at the end of a brief tool line, including merged `(#1, #3) x2`. */
+const briefLineRefs = (line: string): number[] => {
+  const group = line.match(TRAILING_REFS_RE)?.[1];
+  return group ? [...group.matchAll(/#(\d+)/g)].map((m) => parseInt(m[1], 10)) : [];
+};
+
+const isCodemodeBriefLine = (line: string): boolean =>
+  isCodemodeToolName(line.match(/^\* (\S+)/)?.[1]);
+
+/**
+ * The omission marker stays exactly as upstream for non-codemode lines. When
+ * a dropped line is a codemode call, the marker names the session-global
+ * entry range that holds the dropped calls and their results, so the agent
+ * can recover the intent instead of only being told something is missing.
+ */
+const omissionMarker = (dropped: string[], firstKept: string | undefined, count: number): string => {
+  const plain = `* (${count} earlier tool-call entries omitted)`;
+  if (!dropped.some(isCodemodeBriefLine)) return plain;
+  const droppedRefs = dropped.flatMap(briefLineRefs);
+  if (droppedRefs.length === 0) return plain;
+  const start = Math.min(...droppedRefs);
+  const keptRefs = firstKept ? briefLineRefs(firstKept) : [];
+  const end = keptRefs.length > 0 ? Math.min(...keptRefs) - 1 : Math.max(...droppedRefs);
+  if (end < start) return plain;
+  return `* (${count} earlier tool-call entries omitted; recall range:[${start}, ${end}])`;
 };
 
 /**
