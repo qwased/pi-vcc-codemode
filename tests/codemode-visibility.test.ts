@@ -197,9 +197,22 @@ describe("codemode in the compact brief", () => {
     ];
 
     const brief = briefOf(messages);
-    expect(brief).toContain("* codemode -> read×2, bash | goal: 验证登录流程");
+    expect(brief).toContain("* codemode -> read, bash | goal: 验证登录流程");
+    expect(brief).not.toContain("read×2");
     expect(brief).not.toContain("RESULT_BODY_MARKER");
     expect(brief).not.toContain("src/a.ts");
+  });
+
+  test("repeated tool names appear once, ordered by call-site count", () => {
+    const brief = briefOf([
+      codemodeCall(
+        codemodeScript(
+          "统计调用位置",
+          "await tools.bash({ command: 'one' });\nawait tools.read({ path: 'a' });\nawait tools.bash({ command: 'two' });",
+        ),
+      ),
+    ]);
+    expect(brief).toContain("* codemode -> bash, read | goal: 统计调用位置");
   });
 
   test("missing intent falls back to the 80-char code head", () => {

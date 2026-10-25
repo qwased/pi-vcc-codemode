@@ -75,8 +75,8 @@ export const codemodeToolNames = (code: string): Array<{ name: string; count: nu
  */
 export const summarizeCodemodeBrief = (code: string): string => {
   const names = codemodeToolNames(code);
-  const shown = names.slice(0, CODE_BRIEF_TOOL_NAMES)
-    .map(({ name, count }) => (count > 1 ? name + "×" + count : name));
+  // The counts only order the names; printing them read as execution counts.
+  const shown = names.slice(0, CODE_BRIEF_TOOL_NAMES).map(({ name }) => name);
   const omitted = names.length - Math.min(names.length, CODE_BRIEF_TOOL_NAMES);
   const namesText = shown.length > 0
     ? "-> " + shown.join(", ") + (omitted > 0 ? " +" + omitted + " more" : "") + " | "
