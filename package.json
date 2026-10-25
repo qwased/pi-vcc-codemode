@@ -1,7 +1,7 @@
 {
-  "name": "@sting8k/pi-vcc",
-  "version": "0.10.2",
-  "description": "Algorithmic conversation compactor for pi - transcript-preserving structured summaries, no LLM calls",
+  "name": "pi-vcc-codemode",
+  "version": "0.1.0",
+  "description": "Codemode-aware conversation compactor for Pi - transcript-preserving structured summaries, no LLM calls",
   "license": "MIT",
   "main": "index.ts",
   "files": [
@@ -14,11 +14,19 @@
     "pi-extension",
     "vcc",
     "compact",
-    "compaction"
+    "compaction",
+    "codemode"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sting8k/pi-vcc.git"
+    "url": "git+https://github.com/qwased/pi-vcc.git"
+  },
+  "homepage": "https://github.com/qwased/pi-vcc#readme",
+  "bugs": {
+    "url": "https://github.com/qwased/pi-vcc/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsc --ignoreConfig --noEmit --skipLibCheck --module preserve --moduleResolution bundler --target ES2022 --types node index.ts"

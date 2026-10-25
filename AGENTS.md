@@ -1,6 +1,6 @@
 # AGENTS.md
 
-pi-vcc is a Pi extension: algorithmic compaction (no LLM call) plus `vcc_recall` over the raw session history. User-facing docs are in `README.md`; keep it short and put contributor notes here.
+pi-vcc-codemode is the codemode-aware fork of pi-vcc: a Pi extension with algorithmic compaction (no LLM call) plus `vcc_recall` over the raw session history. User-facing docs are in `README.md`; keep it short and put contributor notes here.
 
 ## Checks
 

@@ -1,18 +1,18 @@
-# pi-vcc
+# pi-vcc-codemode
 
-[![npm](https://img.shields.io/npm/v/@sting8k/pi-vcc)](https://www.npmjs.com/package/@sting8k/pi-vcc)
+[![npm](https://img.shields.io/npm/v/pi-vcc-codemode)](https://www.npmjs.com/package/pi-vcc-codemode)
 
-Algorithmic conversation compactor for [Pi](https://github.com/badlogic/pi-mono). No LLM calls: it builds the summary by extraction and formatting.
+Codemode-aware fork of [pi-vcc](https://github.com/sting8k/pi-vcc): algorithmic conversation compaction for [Pi](https://github.com/badlogic/pi-mono). No LLM calls: it builds the summary by extraction and formatting, and keeps codemode scripts, declared intent and nested tool calls readable.
 
 Inspired by [VCC](https://github.com/lllyasviel/VCC) (View-oriented Conversation Compiler).
 
 ## Demo
 
-![pi-vcc demo](https://raw.githubusercontent.com/sting8k/pi-vcc/master/demo.gif)
+![pi-vcc-codemode demo](https://raw.githubusercontent.com/qwased/pi-vcc/master/demo.gif)
 
-## Why pi-vcc
+## Why pi-vcc-codemode
 
-|  | Pi default | pi-vcc |
+|  | Pi default | pi-vcc-codemode |
 |---|---|---|
 | **Method** | LLM-generated summary | Algorithmic extraction, no LLM |
 | **Determinism** | Non-deterministic, can hallucinate | Same input, same output |
@@ -25,27 +25,29 @@ Inspired by [VCC](https://github.com/lllyasviel/VCC) (View-oriented Conversation
 
 Size and latency measured over 1,884 real sessions (summary chars vs the summarized conversation). How much of a session's facts survive is measured in [`benchmarks/README.md`](./benchmarks/README.md).
 
-pi-vcc also takes over `/compact` and automatic compactions, makes its own cut when Pi's cut leaves nothing to summarize, and adds `/pi-vcc` for compacting on demand.
+The extension also takes over `/compact` and automatic compactions, makes its own cut when Pi's cut leaves nothing to summarize, and adds `/pi-vcc` for compacting on demand.
 
 ## Install
 
 Requires Pi 1.0 or newer.
 
 ```bash
-pi install npm:@sting8k/pi-vcc
+pi install npm:pi-vcc-codemode
 ```
 
 Or from GitHub:
 
 ```bash
-pi install https://github.com/sting8k/pi-vcc
+pi install https://github.com/qwased/pi-vcc
 ```
 
 Or try without installing:
 
 ```bash
-pi -e https://github.com/sting8k/pi-vcc
+pi -e https://github.com/qwased/pi-vcc
 ```
+
+The fork keeps upstream names for its commands, `vcc_recall` and the `pi-vcc-config.json` settings file, so existing instructions for pi-vcc still apply.
 
 ## Usage
 
@@ -189,6 +191,7 @@ Benchmarks comparing the ranked brief with the 0.3.18 baseline (recall, fact den
 
 ## Acknowledgments
 
+- Forked from [pi-vcc](https://github.com/sting8k/pi-vcc) by [@sting8k](https://github.com/sting8k).
 - [VCC](https://github.com/lllyasviel/VCC), the original transcript-preserving conversation compiler.
 - Recall `mode:"touched"` and `#N:path` drill-down ported from [pi-blackhole](https://github.com/k0valik/pi-blackhole) by [@k0valik](https://github.com/k0valik), who also suggested the feature.
 

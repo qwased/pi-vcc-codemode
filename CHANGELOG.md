@@ -1,12 +1,16 @@
 # Changelog
 
-All notable changes to `@sting8k/pi-vcc` are documented in this file.
+All notable changes to `pi-vcc-codemode` are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-25
+
+First release of the codemode-aware fork, based on `@sting8k/pi-vcc` 0.10.2.
+
 ### Features
 
-- **Codemode-aware summaries and recall** — while the `codemode` tool is active, pi-vcc adds two prompt rules: use `vcc_recall` for earlier context, and start each script with a one-line `// goal: ...` in the user's language. The compact brief shows that goal instead of the script head, with the tools the script names. Recall shows a script preview and one line of nested calls (name, arguments, status, error, duration), and nested arguments are searchable. Sessions without codemode records keep the previous rendering, brief and search behavior.
+- **Codemode-aware summaries and recall** — while the `codemode` tool is active, the extension adds prompt rules: use `vcc_recall` for earlier context when that tool is available, and start each script with a one-line `// goal: ...` in the user's language. The compact brief shows that goal instead of the script head, with the tools the script names. Recall shows a script preview and one line of nested calls (name, arguments, status, error, duration), and nested arguments are searchable. Sessions without codemode records keep the previous rendering, brief and search behavior.
 
 ### Changed
 
@@ -14,7 +18,7 @@ All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
 ### Removed
 
-- **Automatic post-compaction continue** — Pi 1.0 resumes the run by itself, so pi-vcc no longer sends its own hidden continue message, and the `continueAfterThresholdCompact` setting is gone. An existing config key is ignored. The marker left in older sessions is still filtered out of the model context.
+- **Automatic post-compaction continue** — Pi 1.0 resumes the run by itself, so the extension no longer sends its own hidden continue message, and the `continueAfterThresholdCompact` setting is gone. An existing config key is ignored. The marker left in older sessions is still filtered out of the model context.
 
 ### Fixes
 
