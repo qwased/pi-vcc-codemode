@@ -42,7 +42,7 @@ describe.skipIf(typeof (piCore as any).buildSessionProjection !== "function")("c
     let handler: any;
     registerBeforeCompactHook({ on(name: string, fn: any) {
       if (name === "session_before_compact") handler = fn;
-    } } as any, "1.1.0");
+    } } as any);
     const entries = session.getBranch();
     return handler({
       type: "session_before_compact", branchEntries: entries,

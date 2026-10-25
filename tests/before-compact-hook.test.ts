@@ -8,11 +8,6 @@ let tmpDir: string;
 let CONFIG_PATH: string;
 const DEBUG_PATH = DEBUG_SNAPSHOT_PATH;
 
-// Auto-continue is version-gated (issue #22). Pin the pi version explicitly so
-// these tests describe behaviour instead of tracking the installed pi package.
-const OLD_PI = "0.84.3"; // needs pi-vcc's fallback continue
-const SELF_RESUME_PI = "0.84.4"; // pi core resumes the run by itself
-
 beforeAll(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "pi-vcc-test-"));
   CONFIG_PATH = join(tmpDir, "pi-vcc-config.json");
@@ -253,90 +248,10 @@ describe("registerBeforeCompactHook: compact-all path", () => {
     expect(getLastCompactionStats()).toMatchObject({ reason: "threshold", willRetry: false });
   });
 
-  test("threshold compact auto-continues by default on pi < 0.84.4 with hidden custom message", async () => {
+  test("automatic compact shows the stats toast without sending a synthetic continue", async () => {
     setConfig({ debug: false, overrideDefaultCompaction: true });
-    const { pi, invokeBefore, invokeCompact, customMessages, userMessages } = createMockPi();
-    registerBeforeCompactHook(pi, OLD_PI);
-
-    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
-    invokeBefore(makeEvent(entries, undefined, { reason: "threshold", willRetry: false }));
-    await invokeCompact({ type: "session_compact", fromExtension: true, compactionEntry: { details: { compactor: "pi-vcc" } }, reason: "threshold", willRetry: false });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    expect(userMessages).toEqual([]);
-    expect(customMessages).toHaveLength(1);
-    expect(customMessages[0].options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
-    expect(customMessages[0].message).toMatchObject({
-      customType: "pi-vcc-auto-continue",
-      display: false,
-    });
-    expect(customMessages[0].message.content).toEqual([]);
-  });
-
-  test("successful overflow compact auto-continues by default on pi < 0.84.4 with hidden custom message", async () => {
-    setConfig({ debug: false, overrideDefaultCompaction: true });
-    const { pi, invokeBefore, invokeCompact, customMessages, userMessages } = createMockPi();
-    registerBeforeCompactHook(pi, OLD_PI);
-
-    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
-    invokeBefore(makeEvent(entries, undefined, { reason: "overflow", willRetry: false }));
-    await invokeCompact({ type: "session_compact", fromExtension: true, compactionEntry: { details: { compactor: "pi-vcc" } }, reason: "overflow", willRetry: false });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    expect(userMessages).toEqual([]);
-    expect(customMessages).toHaveLength(1);
-    expect(customMessages[0].options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
-    expect(customMessages[0].message).toMatchObject({
-      customType: "pi-vcc-auto-continue",
-      display: false,
-    });
-    expect(customMessages[0].message.content).toEqual([]);
-  });
-
-  test("threshold compact continuation is canceled when a real user prompt starts", async () => {
-    setConfig({ debug: false, overrideDefaultCompaction: true });
-    const { pi, invokeBefore, invokeCompact, invokeBeforeAgentStart, customMessages } = createMockPi();
-    registerBeforeCompactHook(pi, OLD_PI);
-
-    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
-    invokeBefore(makeEvent(entries, undefined, { reason: "threshold", willRetry: false }));
-    await invokeCompact({ type: "session_compact", fromExtension: true, compactionEntry: { details: { compactor: "pi-vcc" } }, reason: "threshold", willRetry: false });
-    invokeBeforeAgentStart();
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    expect(customMessages).toEqual([]);
-  });
-
-  test("threshold compact continuation can be disabled", async () => {
-    setConfig({ debug: false, overrideDefaultCompaction: true, continueAfterThresholdCompact: false });
-    const { pi, invokeBefore, invokeCompact, customMessages } = createMockPi();
-    registerBeforeCompactHook(pi, OLD_PI);
-
-    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
-    invokeBefore(makeEvent(entries, undefined, { reason: "threshold", willRetry: false }));
-    await invokeCompact({ type: "session_compact", fromExtension: true, compactionEntry: { details: { compactor: "pi-vcc" } }, reason: "threshold", willRetry: false });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    expect(customMessages).toEqual([]);
-  });
-
-  test("successful overflow compact continuation can be disabled", async () => {
-    setConfig({ debug: false, overrideDefaultCompaction: true, continueAfterThresholdCompact: false });
-    const { pi, invokeBefore, invokeCompact, customMessages } = createMockPi();
-    registerBeforeCompactHook(pi, OLD_PI);
-
-    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
-    invokeBefore(makeEvent(entries, undefined, { reason: "overflow", willRetry: false }));
-    await invokeCompact({ type: "session_compact", fromExtension: true, compactionEntry: { details: { compactor: "pi-vcc" } }, reason: "overflow", willRetry: false });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    expect(customMessages).toEqual([]);
-  });
-
-  test("pi >= 0.84.4 gets no pi-vcc continue even with the setting explicitly true", async () => {
-    setConfig({ debug: false, overrideDefaultCompaction: true, continueAfterThresholdCompact: true });
     const { pi, invokeBefore, invokeCompact, customMessages, userMessages, notifyCalls } = createMockPi();
-    registerBeforeCompactHook(pi, SELF_RESUME_PI);
+    registerBeforeCompactHook(pi);
 
     const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
     invokeBefore(makeEvent(entries, undefined, { reason: "threshold", willRetry: false }));
@@ -349,43 +264,17 @@ describe("registerBeforeCompactHook: compact-all path", () => {
     expect(notifyCalls.some((call) => call.msg.startsWith("pi-vcc: kept"))).toBe(true);
   });
 
-  test("overflow compact on pi >= 0.84.4 also skips the pi-vcc continue", async () => {
-    setConfig({ debug: false, overrideDefaultCompaction: true, continueAfterThresholdCompact: true });
-    const { pi, invokeBefore, invokeCompact, customMessages } = createMockPi();
-    registerBeforeCompactHook(pi, SELF_RESUME_PI);
-
-    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
-    invokeBefore(makeEvent(entries, undefined, { reason: "overflow", willRetry: false }));
-    await invokeCompact({ type: "session_compact", fromExtension: true, compactionEntry: { details: { compactor: "pi-vcc" } }, reason: "overflow", willRetry: false });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    expect(customMessages).toEqual([]);
-  });
-
-  test("unreadable pi version fails safe: no continue", async () => {
-    setConfig({ debug: false, overrideDefaultCompaction: true, continueAfterThresholdCompact: true });
-    const { pi, invokeBefore, invokeCompact, customMessages } = createMockPi();
-    registerBeforeCompactHook(pi, "not-a-version");
-
-    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
-    invokeBefore(makeEvent(entries, undefined, { reason: "threshold", willRetry: false }));
-    await invokeCompact({ type: "session_compact", fromExtension: true, compactionEntry: { details: { compactor: "pi-vcc" } }, reason: "threshold", willRetry: false });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    expect(customMessages).toEqual([]);
-  });
-
-  test("explicit /compact follow-up prompt still runs on pi >= 0.84.4", async () => {
+  test("explicit /compact follow-up prompt still runs", async () => {
     setConfig({ debug: false, overrideDefaultCompaction: true });
     const { pi, invokeBefore, invokeCompact, userMessages, customMessages } = createMockPi();
-    registerBeforeCompactHook(pi, SELF_RESUME_PI);
+    registerBeforeCompactHook(pi);
 
     const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
     invokeBefore(makeEvent(entries, "continue"));
     await invokeCompact({ type: "session_compact", fromExtension: true, compactionEntry: { details: { compactor: "pi-vcc" } } });
     await new Promise((resolve) => setTimeout(resolve, 550));
 
-    expect(userMessages).toEqual(["continue"]); // version gate only touches pi-vcc's own continue
+    expect(userMessages).toEqual(["continue"]);
     expect(customMessages).toEqual([]);
   });
 
@@ -956,26 +845,25 @@ describe("registerBeforeCompactHook: skipForProviders (#27)", () => {
   test("session_compact ignores a compaction pi-vcc did not handle", async () => {
     setConfig({ debug: false, overrideDefaultCompaction: true, skipForProviders: ["openai"] });
     const mock = createMockPi();
-    registerBeforeCompactHook(mock.pi, OLD_PI);
+    registerBeforeCompactHook(mock.pi);
 
-    // pi-vcc compacts once (anthropic) → stale stats now exist.
+    // pi-vcc compacts once (anthropic) → stats toast scheduled.
     mock.ctx.model = { provider: "anthropic" };
     mock.invokeBefore(makeEvent(entries(), undefined, { reason: "threshold", willRetry: false }));
     await mock.invokeCompact({ type: "session_compact", fromExtension: true, compactionEntry: { details: { compactor: "pi-vcc" } }, reason: "threshold", willRetry: false });
-    await new Promise((r) => setTimeout(r, 5));
-    const customsAfterVcc = mock.customMessages.length;
-    const userMsgsAfterVcc = mock.userMessages.length;
-    expect(customsAfterVcc).toBe(1); // auto-continue fired for pi-vcc's own compaction
+    await new Promise((r) => setTimeout(r, 550));
+    const notificationsAfterVcc = mock.notifyCalls.length;
+    expect(notificationsAfterVcc).toBeGreaterThan(0);
 
     // Model switches to a skipped provider → pi-vcc defers; another extension compacts.
     mock.ctx.model = { provider: "openai" };
     expect(mock.invokeBefore(makeEvent(entries(), undefined, { reason: "threshold", willRetry: false }))).toBeUndefined();
     await mock.invokeCompact({ type: "session_compact", fromExtension: true, compactionEntry: { details: { compactor: "pi-codex-compaction" } }, reason: "threshold", willRetry: false });
-    await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 550));
 
-    // No second auto-continue, no stale follow-up on someone else's compaction.
-    expect(mock.customMessages.length).toBe(customsAfterVcc);
-    expect(mock.userMessages.length).toBe(userMsgsAfterVcc);
+    // No second toast and no stale follow-up on someone else's compaction.
+    expect(mock.notifyCalls.length).toBe(notificationsAfterVcc);
+    expect(mock.userMessages).toEqual([]);
   });
 
   test("load-order race: pi-vcc returned a compaction but another extension's won persist", async () => {
@@ -986,15 +874,15 @@ describe("registerBeforeCompactHook: skipForProviders (#27)", () => {
     setConfig({ debug: false, overrideDefaultCompaction: true }); // no skipForProviders yet
     const mock = createMockPi();
     mock.ctx.model = { provider: "openai" };
-    registerBeforeCompactHook(mock.pi, OLD_PI);
+    registerBeforeCompactHook(mock.pi);
 
     // pi-vcc produced a compaction...
     expect(mock.invokeBefore(makeEvent(entries(), undefined, { reason: "threshold", willRetry: false }))?.compaction).toBeTruthy();
     // ...but pi-codex-compaction loaded later and its entry was persisted.
     await mock.invokeCompact({ type: "session_compact", fromExtension: true, compactionEntry: { details: { compactor: "pi-codex-compaction" } }, reason: "threshold", willRetry: false });
-    await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 550));
 
-    expect(mock.customMessages).toEqual([]); // no auto-continue on someone else's compaction
+    expect(mock.notifyCalls).toEqual([]); // no stats toast on someone else's compaction
     expect(mock.userMessages).toEqual([]);
   });
 });

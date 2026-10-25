@@ -10,14 +10,15 @@ bun run typecheck
 bun test
 ```
 
-`bun.lock` pins an older Pi host (0.85.1). CI also runs the suite on Pi 1.1.0 and 1.4.0; to do the same locally:
+`bun.lock` pins Pi 1.4.0. CI also runs the suite on Pi 1.0.0, the minimum supported version; to do the same locally:
 
 ```sh
-npm install --no-save --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.4.0 @earendil-works/pi-codemode@1.4.0
+npm install --no-save --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.0.0 @earendil-works/pi-codemode@1.0.0
+bun run typecheck
 bun test
 ```
 
-Tests for host features missing from the locked Pi (e.g. context edits) skip there and run on newer hosts.
+Restore the locked host afterwards with `bun install --frozen-lockfile --ignore-scripts`.
 
 ## Layout
 
@@ -29,7 +30,7 @@ Tests for host features missing from the locked Pi (e.g. context edits) skip the
 
 ## Rules
 
-- Support the whole peer range (`>=0.74.0 <2.0.0`). Use a newer host API only behind a check that keeps older hosts on the old path.
+- Support the whole peer range (`>=1.0.0 <2.0.0`). Do not add fallbacks for older Pi hosts.
 - `#N` refs in summaries are session-wide entry indices that `vcc_recall` resolves. Any change to which entries are indexed must keep them stable.
 - Agents act on recall and summary text (headers, hint lines, `Ignored:` notes). Treat it as an interface: change it on purpose, and update the tests that pin it.
 - The smart keep-tail limit (25k) is pi-vcc's own and does not follow Pi's `compaction.keepRecentTokens`.

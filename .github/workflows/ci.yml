@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 10
     strategy:
       matrix:
-        pi: [locked, "1.1.0", "1.4.0"]
+        pi: [locked, "1.0.0"]
     steps:
       # Actions pinned to commit SHAs so a retagged release cannot swap the
       # code this job runs.

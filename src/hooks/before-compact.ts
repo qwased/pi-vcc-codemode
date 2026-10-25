@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { convertToLlm, VERSION } from "@earendil-works/pi-coding-agent";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import * as piCore from "@earendil-works/pi-coding-agent";
 import { writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -40,91 +40,11 @@ export const OVERSIZED_TAIL_FACTOR = 2.5;
 let lastStats: CompactionStats | null = null;
 let lastCompactWasPiVcc = false;
 let pendingFollowUpPrompt: string | null = null;
-let pendingAutoContinueTimer: ReturnType<typeof setTimeout> | null = null;
 
-// Invisible auto-continue: resume the agent after compaction without polluting
-// the LLM context with a user-visible continue prompt. triggerInvisibleContinue
-// sends a custom message marked with a dedicated customType (content:[],
-// display:false, triggerTurn:true, deliverAs:'followUp') so Pi's queue/busy-state
-// stays coherent; the on('context') filter registered in registerBeforeCompactHook
-// removes that message (by customType ONLY) from the LLM payload — the model
-// simply continues from the compaction summary.
-//
-// Ported from monotykamary/pi-vcc branch 'tom'
-// (https://github.com/monotykamary/pi-vcc, MIT) — a pi-vcc derivative.
+// Legacy marker from pi-vcc versions that sent an invisible continue message
+// after automatic compaction. New runs no longer send one; the context filter
+// below only hides markers still present in sessions written by those versions.
 export const AUTO_CONTINUE_CUSTOM_TYPE = "pi-vcc-auto-continue";
-
-/**
- * First Pi version that resumes the run by itself after an automatic compaction.
- * From this version on pi-vcc's fallback continue is redundant, and because it is
- * scheduled blind (setTimeout(0), no idle check) it lands as a ghost turn once the
- * self-resumed run ends - see issue #22, which reports both behaviours on 0.84.4.
- * Kept as a [major, minor, patch] tuple so there is one source of truth.
- */
-export const PI_SELF_RESUME_VERSION: readonly [number, number, number] = [0, 84, 4];
-
-/**
- * Minimal semver core parse: [major, minor, patch], or null when unusable.
- * Prerelease/build suffixes are dropped, so 0.84.4-rc.1 counts as 0.84.4 - the
- * safe direction, since such a build already carries the self-resume behaviour.
- */
-const parseVersionCore = (version: unknown): [number, number, number] | null => {
-  if (typeof version !== "string") return null;
-  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version.trim());
-  if (!m) return null;
-  return [Number(m[1]), Number(m[2]), Number(m[3])];
-};
-
-/**
- * Two keys must both turn for pi-vcc to send its own continue:
- *  - `settingEnabled` is the user's permission (`continueAfterThresholdCompact`);
- *    false always wins.
- *  - the running Pi must be old enough to still need the fallback.
- * An unreadable/malformed version fails safe to "no continue": a missing continue
- * costs one idle turn, a ghost turn corrupts the transcript.
- */
-export const shouldScheduleAutoContinue = (settingEnabled: boolean, piVersion: unknown): boolean => {
-  if (!settingEnabled) return false;
-  const running = parseVersionCore(piVersion);
-  if (!running) return false;
-  for (let i = 0; i < 3; i++) {
-    if (running[i] !== PI_SELF_RESUME_VERSION[i]) return running[i] < PI_SELF_RESUME_VERSION[i];
-  }
-  return false;
-};
-
-export const triggerInvisibleContinue = (pi: ExtensionAPI): void => {
-  pi.sendMessage(
-    {
-      customType: AUTO_CONTINUE_CUSTOM_TYPE,
-      content: [],
-      display: false,
-      details: undefined,
-    },
-    {
-      triggerTurn: true,
-      deliverAs: "followUp",
-    },
-  );
-};
-
-const clearPendingAutoContinue = () => {
-
-  if (pendingAutoContinueTimer) {
-    clearTimeout(pendingAutoContinueTimer);
-    pendingAutoContinueTimer = null;
-  }
-};
-
-const scheduleAutoContinue = (pi: any) => {
-  clearPendingAutoContinue();
-  pendingAutoContinueTimer = setTimeout(() => {
-    pendingAutoContinueTimer = null;
-    try {
-      triggerInvisibleContinue(pi);
-    } catch {}
-  }, 0);
-};
 
 export const getLastCompactionStats = () => lastStats;
 
@@ -587,24 +507,15 @@ const REASON_MESSAGES: Record<OwnCutCancelReason, string> = {
   too_few_live_messages: "pi-vcc: Too few messages to compact",
 };
 
-/**
- * `piVersion` is the running Pi version (defaults to the runtime's own VERSION).
- * It is a parameter, not a setting: it decides whether pi-vcc's auto-continue
- * fallback is still needed, and lets tests pin the behaviour to a version.
- */
-export const registerBeforeCompactHook = (pi: ExtensionAPI, piVersion: string = VERSION) => {
-  // Filter our invisible-continue marker out of the LLM context payload so the
-  // model just continues from the compaction summary (matched by customType ONLY).
+export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
+  // Filter the legacy invisible-continue marker out of the LLM context payload
+  // (matched by customType ONLY), so old sessions read cleanly.
   pi.on("context", (event) => {
     const messages = event.messages.filter((message) => {
       if (message.role !== "custom") return true;
       return message.customType !== AUTO_CONTINUE_CUSTOM_TYPE;
     });
     if (messages.length !== event.messages.length) return { messages };
-  });
-
-  pi.on("before_agent_start", () => {
-    clearPendingAutoContinue();
   });
 
   pi.on("session_before_compact", (event, ctx) => {
@@ -901,7 +812,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, piVersion: string = 
   // Fire success toast for /compact path only (delayed to let UI settle).
   // /pi-vcc path uses its own onComplete callback in the command handler.
   pi.on("session_compact", async (event, ctx) => {
-    const { reason, willRetry } = readCompactionEventContext(event);
+    const { willRetry } = readCompactionEventContext(event);
     if (!event.fromExtension) return;
     // The runner keeps the LAST non-null session_before_compact result, so
     // another compaction extension can win even when pi-vcc also returned one.
@@ -914,15 +825,11 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, piVersion: string = 
     if (willRetry) return;
     const stats = lastStats;
     if (!stats) return;
-    const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow")
-      && shouldScheduleAutoContinue(loadSettings().continueAfterThresholdCompact, piVersion);
     scheduleCompactionStatsNotify(ctx, stats);
     if (followUpPrompt) {
       try {
         await pi.sendUserMessage(followUpPrompt);
       } catch {}
-    } else if (shouldContinueAfterAutoCompact) {
-      scheduleAutoContinue(pi);
     }
   });
 };

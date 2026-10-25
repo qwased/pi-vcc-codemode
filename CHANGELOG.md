@@ -4,6 +4,14 @@ All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Requires Pi 1.0 or newer** — the peer range is now `>=1.0.0 <2.0.0`. Pi 0.74–0.99 are no longer supported.
+
+### Removed
+
+- **Automatic post-compaction continue** — Pi 1.0 resumes the run by itself, so pi-vcc no longer sends its own hidden continue message, and the `continueAfterThresholdCompact` setting is gone. An existing config key is ignored. The marker left in older sessions is still filtered out of the model context.
+
 ### Fixes
 
 - **Debug snapshots work on Windows** — the `debug` setting now writes `pi-vcc-debug.json` to the OS temp directory instead of `/tmp`, so it also works when the workspace is not on the system drive.

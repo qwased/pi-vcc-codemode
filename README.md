@@ -29,6 +29,8 @@ pi-vcc also takes over `/compact` and automatic compactions, makes its own cut w
 
 ## Install
 
+Requires Pi 1.0 or newer.
+
 ```bash
 pi install npm:@sting8k/pi-vcc
 ```
@@ -161,7 +163,6 @@ Config lives at `pi-vcc-config.json` in Pi's agent directory (`~/.pi/agent`, or 
 {
   "overrideDefaultCompaction": true,
   "smartKeepTail": true,
-  "continueAfterThresholdCompact": true,
   "debug": false,
   "skipForProviders": [],
   "skipCustomTypes": [],
@@ -171,7 +172,6 @@ Config lives at `pi-vcc-config.json` in Pi's agent directory (`~/.pi/agent`, or 
 
 - **`overrideDefaultCompaction`** *(default `true`)*: pi-vcc handles `/pi-vcc`, `/compact` and automatic compactions. With `false` it only handles `/pi-vcc`. Existing config files keep their value.
 - **`smartKeepTail`** *(default `true`)*: if the `keep:1` tail is under 5k tokens, keep as many turns as fit in 25k. This is pi-vcc's own limit; Pi's `compaction.keepRecentTokens` does not change it. An explicit `keep:N` is always respected.
-- **`continueAfterThresholdCompact`** *(default `true`)*: after an automatic compaction, tell the agent to carry on instead of stopping. Only used on pi < 0.84.4; newer pi resumes on its own. `false` turns it off everywhere.
 - **`debug`** *(default `false`)*: write details of each compaction (message counts, cut, sections, token calibration) to `pi-vcc-debug.json` in the OS temp directory.
 - **`skipForProviders`** *(default `[]`)*: providers for which pi-vcc steps aside, so another compaction extension can handle them. Compared case-insensitively with Pi's provider id (see `/model`; Grok is `xai`). Checked on every compaction; `/pi-vcc` always runs.
 - **`skipCustomTypes`** *(default `[]`)*: `customType` values of `custom_message` entries to leave out of the summary, for per-turn boilerplate other extensions inject (skill cards, guidance blocks). Exact, case-sensitive match; look for `"type":"custom_message"` in your session file to find the value. Only the summary input changes, not the cut.
@@ -185,7 +185,6 @@ Benchmarks comparing the ranked brief with the 0.3.18 baseline (recall, fact den
 
 - [VCC](https://github.com/lllyasviel/VCC), the original transcript-preserving conversation compiler.
 - Recall `mode:"touched"` and `#N:path` drill-down ported from [pi-blackhole](https://github.com/k0valik/pi-blackhole) by [@k0valik](https://github.com/k0valik), who also suggested the feature.
-- Invisible auto-continue pattern ported from [monotykamary/pi-vcc](https://github.com/monotykamary/pi-vcc) (`tom` branch) by [@monotykamary](https://github.com/monotykamary).
 
 ## License
 
