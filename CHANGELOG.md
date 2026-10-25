@@ -4,9 +4,18 @@ All notable changes to `pi-vcc-codemode` are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-25
+
+Documentation and package metadata release. Runtime behavior is unchanged from 0.1.0.
+
 ### Changed
 
-- **Repository moved to `qwased/pi-vcc-codemode`** — package metadata, install links and the demo URL now point at the renamed repository. The README also documents the codemode pain point, the before/after difference from upstream, the two-layer gating model and the current limits.
+- **Repository moved to `qwased/pi-vcc-codemode`** — package metadata, install links and the demo URL now point at the renamed repository.
+
+### Documentation
+
+- **README rewritten for the codemode fork** — explains the codemode compaction blind spot, the before/after difference from upstream, the two-layer gating model, real-session observations and the current limits.
+- **npm package contents** — `README.md` and `LICENSE` are now explicit entries in the `files` list, and the benchmark link points at GitHub so it also works from the npm package page.
 
 ## [0.1.0] - 2026-10-25
 

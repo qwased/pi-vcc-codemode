@@ -268,7 +268,7 @@ Config lives at `pi-vcc-config.json` in Pi's agent directory (`~/.pi/agent`, or 
 
 ## Verification
 
-At the 0.1.0 release, `bun test` passes 485 tests on Pi 1.4.0 and on Pi 1.0.0, and `bun run typecheck` passes on both hosts.
+At the 0.1.1 release, `bun test` passes 485 tests on Pi 1.4.0 and on Pi 1.0.0, and `bun run typecheck` passes on both hosts. 0.1.1 is a documentation and metadata release; runtime behavior is unchanged from 0.1.0.
 
 A small real-session check on Pi 1.4.0 (`huawei/deepseek-v4.1-flash`, codemode `mode:"only"`, `inlineBudget: 5000`, forced compaction) showed:
 
@@ -280,7 +280,7 @@ Those are two paired runs, not a statistical result. The benefit is directional 
 
 ## Benchmarks
 
-The inherited compaction engine is measured against the 0.3.18 baseline in [`benchmarks/README.md`](./benchmarks/README.md). The pi-vcc column below comes from upstream's measurements over 1,884 real sessions (summary chars vs the summarized conversation); codemode rendering adds bounded lines and does not change the cut or the section extractors.
+The inherited compaction engine is measured against the 0.3.18 baseline in [`benchmarks/README.md`](https://github.com/qwased/pi-vcc-codemode/blob/master/benchmarks/README.md). The pi-vcc column below comes from upstream's measurements over 1,884 real sessions (summary chars vs the summarized conversation); codemode rendering adds bounded lines and does not change the cut or the section extractors.
 
 |  | Pi default | pi-vcc-codemode |
 |---|---|---|
