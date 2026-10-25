@@ -1,4 +1,6 @@
 import type { Message, ToolCall } from "@earendil-works/pi-ai";
+import { isCodemodeMessage, isCodemodeToolName } from "../codemode/active";
+import { nestedCallsLine, summarizeCodemodeToolArgs } from "../codemode/summary";
 import { clip, textOf } from "./content";
 import { summarizeToolArgs } from "./tool-args";
 import { extractPath } from "./tool-args";
@@ -15,9 +17,14 @@ const toolCallParts = (content: Message["content"]): ToolCall[] => {
   return (content as { type: string }[]).filter((c): c is ToolCall => c.type === "toolCall");
 };
 
-const toolCalls = (content: Message["content"]): string => {
+const toolCalls = (content: Message["content"], full = false): string => {
   return toolCallParts(content)
-    .map((c) => `${c.name}(${summarizeToolArgs(c.arguments)})`)
+    .map((c) => {
+      const args = isCodemodeToolName(c.name)
+        ? summarizeCodemodeToolArgs(c.arguments, full)
+        : summarizeToolArgs(c.arguments);
+      return `${c.name}(${args})`;
+    })
     .join(", ");
 };
 
@@ -33,9 +40,10 @@ export const renderMessage = (msg: Message, index: number, full = false): Render
   }
   if (msg.role === "toolResult") {
     const text = full ? textOf(msg.content) : clip(textOf(msg.content), 200);
+    const nested = isCodemodeMessage(msg) ? nestedCallsLine(msg, full) : "";
     return {
       index, role: "tool_result",
-      summary: `[${msg.toolName}] ${text}`,
+      summary: `[${msg.toolName}] ${text}${nested ? `\n${nested}` : ""}`,
     };
   }
   // bashExecution has command+output instead of content
@@ -46,7 +54,7 @@ export const renderMessage = (msg: Message, index: number, full = false): Render
     return { index, role: "bash", summary: text };
   }
   const text = full ? textOf(msg.content) : clip(textOf(msg.content), 300);
-  const tools = toolCalls(msg.content);
+  const tools = toolCalls(msg.content, full);
   const files = extractFilesFromContent(msg.content);
   const summary = tools ? `${tools}\n${text}` : text;
   return { index, role: "assistant", summary, ...(files.length > 0 && { files }) };

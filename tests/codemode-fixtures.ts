@@ -16,13 +16,13 @@ export interface NestedCallsFixture {
 }
 
 /**
- * A codemode script with the Pi 1.4 first-line options rule. The target comment
+ * A codemode script with the Pi 1.4 first-line options rule. The goal comment
  * is first when there are no options and second when the options line is present.
  */
 export const codemodeScript = (goal: string, body: string, options = true): string =>
   options
-    ? `// @options: {"max_output_tokens": 2000, "timeout_ms": 60000}\n// 目标：${goal}\n${body}`
-    : `// 目标：${goal}\n${body}`;
+    ? `// @options: {"max_output_tokens": 2000, "timeout_ms": 60000}\n// goal: ${goal}\n${body}`
+    : `// goal: ${goal}\n${body}`;
 
 export const codemodeCall = (code: string, id = "tc_codemode"): Message => ({
   ...assistantWithToolCall("codemode", { code }),

@@ -10,6 +10,7 @@ import { buildGlobalIndexById, loadGlobalIndexById } from "../core/global-indice
 import { parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-args";
 import { loadSettings, type PiVccSettings } from "../core/settings";
 import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageContentTokens, estimateTokensFromChars } from "../core/token-estimate";
+import { appendCodemodeGuidelines } from "../codemode/guideline";
 import type { PiVccCompactionDetails } from "../details";
 import type { CompactionReason } from "../types";
 
@@ -516,6 +517,12 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       return message.customType !== AUTO_CONTINUE_CUSTOM_TYPE;
     });
     if (messages.length !== event.messages.length) return { messages };
+  });
+
+  // Fork-only prompt rules while codemode is active. Mutating the run's
+  // promptGuidelines keeps the rest of the system prompt untouched.
+  pi.on("before_agent_start", (event) => {
+    appendCodemodeGuidelines(pi, event.systemPromptOptions.promptGuidelines);
   });
 
   pi.on("session_before_compact", (event, ctx) => {

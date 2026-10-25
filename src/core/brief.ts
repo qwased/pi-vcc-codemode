@@ -1,4 +1,6 @@
 import type { NormalizedBlock } from "../types";
+import { isCodemodeToolName } from "../codemode/active";
+import { extractCode, summarizeCodemodeBrief } from "../codemode/summary";
 import { clip } from "./content";
 import { extractPath } from "./tool-args";
 import { collapseSkillText } from "./skill-collapse";
@@ -232,6 +234,10 @@ const toolOneLiner = (name: string, args: Record<string, unknown>): string => {
   }
   if (typeof args.query === "string") {
     return `* ${name} "${clip(args.query as string, 60)}"`;
+  }
+  if (isCodemodeToolName(name)) {
+    const code = extractCode(args);
+    if (code) return `* ${name} ${summarizeCodemodeBrief(code)}`;
   }
   return `* ${name}`;
 };

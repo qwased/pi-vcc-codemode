@@ -4,6 +4,10 @@ All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- **Codemode-aware summaries and recall** — while the `codemode` tool is active, pi-vcc adds two prompt rules: use `vcc_recall` for earlier context, and start each script with a one-line `// goal: ...` in the user's language. The compact brief shows that goal instead of the script head, with the tools the script names. Recall shows a script preview and one line of nested calls (name, arguments, status, error, duration), and nested arguments are searchable. Sessions without codemode records keep the previous rendering, brief and search behavior.
+
 ### Changed
 
 - **Requires Pi 1.0 or newer** — the peer range is now `>=1.0.0 <2.0.0`. Pi 0.74–0.99 are no longer supported.

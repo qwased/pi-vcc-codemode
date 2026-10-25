@@ -1,4 +1,6 @@
 import type { Message, ToolCall } from "@earendil-works/pi-ai";
+import { isCodemodeMessage } from "../codemode/active";
+import { nestedCallsSearchText } from "../codemode/search";
 import type { RenderedEntry } from "./render-entries";
 import { textOf, isContentBearing, extractToolCallText, extractToolCallArgsText, clip } from "./content";
 
@@ -315,7 +317,12 @@ const fullText = (msg: Message): string => {
   }
   const text = textOf(msg.content);
   const argsText = toolCallArgsText(msg.content);
-  return argsText ? `${text}\n${argsText}` : text;
+  const nestedText = isCodemodeMessage(msg) ? nestedCallsSearchText(msg) : "";
+  // Keep the upstream string exactly when there is no nested text: inserting
+  // a separator before an existing args block would change non-codemode BM25
+  // document lengths and ranking.
+  if (!nestedText) return argsText ? `${text}\n${argsText}` : text;
+  return [text, argsText, nestedText].filter(Boolean).join("\n");
 };
 
 /**

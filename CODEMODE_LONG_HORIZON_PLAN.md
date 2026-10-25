@@ -1,10 +1,10 @@
 # pi-vcc × Pi codemode 长程任务改进计划
 
 - 日期：2026-10-25
-- 文档状态：实施计划；P0 已完成（2026-10-25），P1 尚未开始。P2 及以后暂缓，待 P1 的 codemode 收益验证通过后再决定。
+- 文档状态：实施计划；P0、P1 已完成（2026-10-25）。P1 收益验证门尚未执行；P2 及以后暂缓，待该门通过后再决定。
 - 上游：`sting8k/pi-vcc` v0.10.2，基线提交 `733e872bf39be627b1b9eb387f964256c77d3cb3`。
-- 本机环境：Bun 1.4.4；Pi CLI 1.4.0。P0 在 locked 0.85.1 与 Pi 1.4.0 上完成；0.85.1 是 P0 历史记录，不再是目标支持范围。
-- 支持范围（2026-10-25 决定）：本 fork 目标为 Pi `>=1.0.0 <2.0.0`。codemode 实际首次出现在 `@earendil-works/pi-codemode` 0.99.0；选择 1.0.0 作为 1.x 稳定下限。peer range、lockfile、CI、AGENTS 和 fixture 的迁移在 P1 影响讨论中单独确认，尚未实施。
+- 本机环境：Bun 1.4.4；Pi CLI 1.4.0。P0 在 locked 0.85.1 与 Pi 1.4.0 上完成；0.85.1 是 P0 历史记录，不再是目标支持范围。P1 在 locked 1.4.0 与最低版本 1.0.0 上完成。
+- 支持范围（2026-10-25 决定并实施）：本 fork 目标为 Pi `>=1.0.0 <2.0.0`。codemode 实际首次出现在 `@earendil-works/pi-codemode` 0.99.0；选择 1.0.0 作为 1.x 稳定下限。peer range、lockfile、CI、AGENTS 和 fixture 已迁移；旧宿主兼容代码和自动续跑 fallback 已删除。
 - 行为口径（2026-10-25 决定）：两层门控。无 codemode 记录的会话保持上游 v0.10.2 行为；codemode 历史按消息内容只读渲染；当前激活只控制提示、意图指令和状态写入。详见 §3.4。
 - 本地依据：`pi-vcc-codemode-patch.md`、`pi-vcc-codemode-long-horizon-review.md`、已复跑的补丁检查、冻结会话反例，以及上述讨论。真实会话内容不进入本仓库；可提交的回归证据使用合成夹具。
 
@@ -308,6 +308,16 @@ error / durationMs / sourceRef
 - `mode:"on"` 的直接工具调用与上游一致；只有 codemode 消息及其 nested 记录进入 fork 渲染。
 - 支持范围迁移完成后，最低版本 1.0.0 与当前 1.4.0 都通过 `typecheck` 和测试。
 
+#### P1 执行记录（2026-10-25）
+
+- **支持范围迁移**（提交 `31c0e33`）：peer range 改为 `>=1.0.0 <2.0.0`；`bun.lock` 锁到 1.4.0；CI 矩阵改为 locked 1.4.0 + 1.0.0；AGENTS/README/CHANGELOG 同步。删除 `continueAfterThresholdCompact`、版本判断和自动续跑发送逻辑，只保留旧 `pi-vcc-auto-continue` 标记的上下文过滤。
+- **新模块**：`src/codemode/active.ts`（按 active tools 判断提示，按消息内容判断历史）、`intent.ts`（首行或 `@options` 后第二行的固定 `// goal:`）、`summary.ts`（脚本预览、nested 记录、简报工具名与意图）、`guideline.ts`（§4.1 定稿文案和注入条件）、`search.ts`（nested 搜索文本与 `vcc_recall` 过滤）。
+- **共享文件**：`render-entries.ts` 只对 `name === "codemode"` 的调用和带 `nestedCalls` 的结果增加内容；`brief.ts` 只对 codemode 调用增加意图行；`search-entries.ts` 只在存在 nested 文本时改变拼接，非 codemode 的文本形状保持上游；`before-compact.ts` 在 `before_agent_start` 中修改 `systemPromptOptions.promptGuidelines`，不替换完整提示词。
+- **测试**：P0 baseline 测试改名为 `codemode-visibility.test.ts`；新增 `codemode-intent`、`codemode-guideline`、`codemode-gating`、`codemode-search`。覆盖 `@options`/无 options、中文意图、大小写/空白、错误前缀、长脚本上限、40 条 nested 的列表/expand 差异、状态/错误/耗时、失败脚本副作用、简报回退、四种 guideline 组合、上游黄金对照、历史只读和已知 P3 自匹配缺口。
+- **结果**：Pi 1.4.0 与 Pi 1.0.0 均为 485 pass / 0 fail；两套宿主 `bun run typecheck` 均通过。
+- **未做**：P1 不新增 `vcc_recall` 参数/工具，不改变 50 条搜索上限，不修复外层脚本自匹配，不加入 P2 store 状态投影，不加入 P3 的脚本分页。
+- **下一步**：按 §6.3 做 P1 真实会话收益验证；优先使用本机可用的 huawei `deepseek-v4.1-flash`，不可用则交由用户处理，不把未运行写成通过。
+
 ### P1 收益验证门（进入 P2 前）
 
 在固定 codemode 任务上对比上游 v0.10.2 与 P1，至少覆盖：长脚本可读性、nested 状态可追性、意图可读性、压缩后正确下一步、重复调查/写入、目标偏离和总 token。
@@ -469,7 +479,7 @@ P0 已完成（见 §5 执行记录）。下一次实施只处理 **P1**：
 
 这样先得到一个小而可验证的改进，不会一开始就把召回、状态、产物和预算全部耦合在一起。
 
-> 2026-10-25 更新：P0 已完成；P1 尚未开始。支持范围迁移和 P1 文件级改动需要单独确认，之后才进入实现。
+> 2026-10-25 更新：P0、P1 已完成并分别提交；支持范围迁移和自动续跑删除已实施。下一步是 P1 收益验证门，通过后才讨论 P2。
 
 ## 10. 参考事实来源
 

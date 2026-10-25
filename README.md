@@ -58,6 +58,12 @@ With the default `keep:1`, a small tail is grown automatically (see `smartKeepTa
 
 On a short session `/pi-vcc` can answer "Nothing to compact yet" whatever `keep:N` says: Pi stops before any extension runs while the whole session still fits in the recent part it always keeps (`compaction.keepRecentTokens` in Pi's settings).
 
+### Codemode sessions
+
+When Pi's `codemode` tool is active, pi-vcc adds prompt rules: recover earlier context with `vcc_recall` before assuming it is gone (when that tool is available), and start each script with a one-line `// goal: ...` in the user's language, describing what the script is for.
+
+Summaries and recall then show that goal instead of the script head, plus the tools the script names. A tool result that ran other tools (as a codemode script does) lists those nested calls with their arguments, status, error and duration, so a failed script still records what ran before it. The record is what Pi saved and may be incomplete; summary text is a preview, and the original message stays in the session.
+
 ### Compacted message structure
 
 ```
