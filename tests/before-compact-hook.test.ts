@@ -2,11 +2,11 @@ import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } fr
 import { existsSync, unlinkSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, formatCompactionStats, buildOwnCut, applyTailBudget } from "../src/hooks/before-compact";
+import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, formatCompactionStats, buildOwnCut, applyTailBudget, DEBUG_SNAPSHOT_PATH } from "../src/hooks/before-compact";
 
 let tmpDir: string;
 let CONFIG_PATH: string;
-const DEBUG_PATH = "/tmp/pi-vcc-debug.json";
+const DEBUG_PATH = DEBUG_SNAPSHOT_PATH;
 
 // Auto-continue is version-gated (issue #22). Pin the pi version explicitly so
 // these tests describe behaviour instead of tracking the installed pi package.

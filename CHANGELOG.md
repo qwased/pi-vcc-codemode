@@ -4,6 +4,10 @@ All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+
+- **Debug snapshots work on Windows** — the `debug` setting now writes `pi-vcc-debug.json` to the OS temp directory instead of `/tmp`, so it also works when the workspace is not on the system drive.
+
 ## [0.10.2]
 
 ### Fixes

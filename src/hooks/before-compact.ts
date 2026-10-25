@@ -2,6 +2,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { convertToLlm, VERSION } from "@earendil-works/pi-coding-agent";
 import * as piCore from "@earendil-works/pi-coding-agent";
 import { writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { compileRanked } from "../core/summarize";
 import { normalize } from "../core/normalize";
 import { buildGlobalIndexById, loadGlobalIndexById } from "../core/global-indices";
@@ -198,9 +200,11 @@ const normalizeKeepUserTurns = (keepUserTurns: number): number => {
   return Math.max(0, Math.floor(keepUserTurns));
 };
 
+export const DEBUG_SNAPSHOT_PATH = join(tmpdir(), "pi-vcc-debug.json");
+
 const dbg = (settings: PiVccSettings, data: Record<string, unknown>) => {
   if (!settings.debug) return;
-  try { writeFileSync("/tmp/pi-vcc-debug.json", JSON.stringify(data, null, 2)); } catch {}
+  try { writeFileSync(DEBUG_SNAPSHOT_PATH, JSON.stringify(data, null, 2)); } catch {}
 };
 
 const previewContent = (content: unknown): string => {

@@ -41,7 +41,7 @@ export interface PiVccSettings {
    * Overflow retry is still owned by pi-core via willRetry.
    */
   continueAfterThresholdCompact: boolean;
-  /** Write debug snapshot to /tmp/pi-vcc-debug.json on each compaction. */
+  /** Write a debug snapshot to the OS temp directory on each compaction. */
   debug: boolean;
   /**
    * Providers for which pi-vcc defers compaction entirely (issue #27), e.g.
