@@ -10,14 +10,14 @@ bun run typecheck
 bun test
 ```
 
-`bun.lock` pins an older Pi host (0.85.1). CI also runs the suite on Pi 1.1.0; to do the same locally:
+`bun.lock` pins an older Pi host (0.85.1). CI also runs the suite on Pi 1.1.0 and 1.4.0; to do the same locally:
 
 ```sh
-npm install --no-save --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.1.0
+npm install --no-save --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.4.0 @earendil-works/pi-codemode@1.4.0
 bun test
 ```
 
-Tests for host features missing from the locked Pi (e.g. context edits) skip there and run on 1.1.0.
+Tests for host features missing from the locked Pi (e.g. context edits) skip there and run on newer hosts.
 
 ## Layout
 
