@@ -2,34 +2,96 @@
 
 [![npm](https://img.shields.io/npm/v/pi-vcc-codemode)](https://www.npmjs.com/package/pi-vcc-codemode)
 
-Codemode-aware fork of [pi-vcc](https://github.com/sting8k/pi-vcc): algorithmic conversation compaction for [Pi](https://github.com/badlogic/pi-mono). No LLM calls: it builds the summary by extraction and formatting, and keeps codemode scripts, declared intent and nested tool calls readable.
+Codemode-aware fork of [pi-vcc](https://github.com/sting8k/pi-vcc) for [Pi](https://github.com/badlogic/pi-mono). It compacts conversations without calling an LLM, and keeps what a codemode script was trying to do, which tools it called, and what happened inside the script readable after compaction.
 
 Inspired by [VCC](https://github.com/lllyasviel/VCC) (View-oriented Conversation Compiler).
 
-## Demo
+## Why this fork
 
-![pi-vcc-codemode demo](https://raw.githubusercontent.com/qwased/pi-vcc/master/demo.gif)
+Pi's `codemode` tool lets the model run one JavaScript script that calls many tools. That is efficient while the session is live, but the transcript records the script as one `codemode` call and one tool result. The nested calls are stored in `nestedCalls` on the result, outside the text a normal compactor reads.
 
-## Why pi-vcc-codemode
+Upstream pi-vcc compacts that transcript correctly but opaquely: the compact brief says `* codemode`, and recall shows `codemode(code)`. After compaction the agent can see that a script ran, but not:
 
-|  | Pi default | pi-vcc-codemode |
+- why it ran,
+- which tools it touched,
+- which side effects completed before a failure,
+- which arguments or errors were involved.
+
+The agent then tends to re-read the same files, re-run the same tests, or repeat writes. This fork keeps a bounded, deterministic view of those facts in the summary, brief, recall and search. No model call is added, and sessions without codemode records keep upstream behavior.
+
+## What changes in codemode sessions
+
+| After compaction | Upstream pi-vcc | pi-vcc-codemode |
 |---|---|---|
-| **Method** | LLM-generated summary | Algorithmic extraction, no LLM |
-| **Determinism** | Non-deterministic, can hallucinate | Same input, same output |
-| **Size reduction** | Varies | 97.6% median, 89% at p10 |
-| **Compaction latency** | Waits for an LLM call | 1 ms median, 11 ms p90, 348 ms worst |
-| **Cost** | Burns tokens on the summarization call | None |
-| **History after compaction** | Gone, the agent only sees the summary | Searchable with `vcc_recall` |
-| **Repeated compactions** | Each rewrite risks losing more | Sections merge and stay capped |
-| **Structure** | Free-form prose | Up to 6 sections + a brief transcript |
+| codemode call in the brief | `* codemode` | `* codemode -> read×2, bash \| goal: Verify the login flow` |
+| codemode call in recall | `codemode(code)` | a bounded script preview, 300 chars in the list and 1,500 chars in expand |
+| nested calls | not rendered; only the result text is visible | one line for the last 12 calls (32 in expand), with name, arguments, status, error and duration |
+| failed script | the visible error | the same error plus the nested calls that succeeded before it |
+| search | visible message and tool-argument text | also indexes nested names, arguments, statuses and errors, up to 2,000 chars per result |
+| model guidance | none | two prompt rules while codemode is active; the recall rule is added only while `vcc_recall` is active |
+| sessions without codemode records | upstream behavior | the same rendering, brief and search |
 
-Size and latency measured over 1,884 real sessions (summary chars vs the summarized conversation). How much of a session's facts survive is measured in [`benchmarks/README.md`](./benchmarks/README.md).
+The tool names in the brief come from a source-level scan of `tools.<name>(...)`. They are a declaration of what the script intends to call, not proof that a call ran. Execution status comes from Pi's nested-call record.
 
-The extension also takes over `/compact` and automatic compactions, makes its own cut when Pi's cut leaves nothing to summarize, and adds `/pi-vcc` for compacting on demand.
+## Example
+
+```js
+// @options: {"max_output_tokens": 2000, "timeout_ms": 60000}
+// goal: Find why login fails after a password reset
+const session = await tools.read({ path: "src/auth/session.ts" });
+const result = await tools.bash({ command: "bun test tests/auth.test.ts" });
+text(result.output);
+```
+
+The compact brief keeps the intent and the declared tools:
+
+```
+* codemode -> read, bash | goal: Find why login fails after a password reset (#42)
+```
+
+Recall keeps a script preview, and the tool result keeps what actually ran:
+
+```
+codemode(code=// @options: ... // goal: Find why login fails after a password reset ...)
+
+[codemode] Script failed
+Error: 1 test failed
+nested: read(path=src/auth/session.ts) 4ms, bash(command=bun test tests/auth.test.ts) error exit 1 812ms
+```
+
+The failed bash call now has a visible history: the read succeeded, then the test failed. Without the nested line, only the script's final error survives.
+
+## The `// goal:` marker
+
+The intent is read from one place only:
+
+```js
+// goal: <intended outcome>
+```
+
+or, when Pi options are present, line 1 is `// @options:` and line 2 is `// goal:`:
+
+```js
+// @options: {"timeout_ms": 60000}
+// goal: <intended outcome>
+```
+
+The marker is matched case-insensitively and tolerates whitespace (`//goal:`, `// GOAL :`). It must be on line 1, or line 2 after `// @options:`; comments in the body are not scanned. The goal is shown in the brief instead of the script head, capped at 200 chars. Without a goal the brief falls back to an 80-char code head.
+
+The guideline asks the model to write the goal in the same language as the user's request and to describe intent, not success. Model compliance is not guaranteed. If the marker is missing, the script still compacts and renders through the code-head fallback.
+
+## Two-layer behavior
+
+The fork deliberately uses two different gates:
+
+- **Prompt layer follows active tools.** The guidelines are appended in `before_agent_start` only while `codemode` is active, in both `mode:"on"` and `mode:"only"`. The recall rule is also gated on `vcc_recall` being active. In `mode:"only"` the active set still contains the hidden declarations; if the codemode catalog omits `vcc_recall`, the rule tells the model to call `tools.vcc_recall` from a script.
+- **Historical layer follows message content.** A codemode call, or any tool result with `nestedCalls`, keeps the rich rendering and search text even after codemode is disabled or in an older session. Turning codemode off stops new prompt rules; it does not make old codemode history opaque.
+
+Direct tool calls next to a codemode call keep the upstream path. `mode:"on"` does not change how `read`, `bash` or other direct calls render.
 
 ## Install
 
-Requires Pi 1.0 or newer.
+Requires Pi 1.0 or newer (`>=1.0.0 <2.0.0`).
 
 ```bash
 pi install npm:pi-vcc-codemode
@@ -38,16 +100,18 @@ pi install npm:pi-vcc-codemode
 Or from GitHub:
 
 ```bash
-pi install https://github.com/qwased/pi-vcc
+pi install https://github.com/qwased/pi-vcc-codemode
 ```
 
 Or try without installing:
 
 ```bash
-pi -e https://github.com/qwased/pi-vcc
+pi -e https://github.com/qwased/pi-vcc-codemode
 ```
 
-The fork keeps upstream names for its commands, `vcc_recall` and the `pi-vcc-config.json` settings file, so existing instructions for pi-vcc still apply.
+Install this package **or** upstream pi-vcc, not both: both register `/pi-vcc`, `/pi-vcc-recall`, the `vcc_recall` tool and the same `pi-vcc-config.json`. If you already use upstream, remove it before installing this fork.
+
+The fork keeps upstream names for its commands, `vcc_recall` and the settings file, so existing instructions for pi-vcc still apply and an existing config carries over.
 
 ## Usage
 
@@ -62,11 +126,13 @@ On a short session `/pi-vcc` can answer "Nothing to compact yet" whatever `keep:
 
 ### Codemode sessions
 
-When Pi's `codemode` tool is active, pi-vcc adds prompt rules: recover earlier context with `vcc_recall` before assuming it is gone (when that tool is available), and start each script with a one-line `// goal: ...` in the user's language, describing what the script is for.
+When codemode is active, the injected prompt rules ask the model to use `vcc_recall` for earlier context when that tool is available, and to start each script with a one-line `// goal: ...` in the user's language.
 
-Summaries and recall then show that goal instead of the script head, plus the tools the script names. A tool result that ran other tools (as a codemode script does) lists those nested calls with their arguments, status, error and duration, so a failed script still records what ran before it. The record is what Pi saved and may be incomplete; summary text is a preview, and the original message stays in the session.
+Compaction then shows that goal instead of the script head, plus the tools the script names. A tool result that ran other tools lists the nested calls with their arguments, status, error and duration, so a failed script still records what ran before it. The record is what Pi saved and may be incomplete; summary text is a preview, and the original message stays in the session.
 
-### Compacted message structure
+No new tool or recall parameter is added. The same `vcc_recall` searches the nested text.
+
+## Compacted message structure
 
 ```
 [Session Goal]
@@ -110,7 +176,7 @@ Root cause is a missing token refresh after password reset... (#11)
 Use `vcc_recall` to search for prior work, decisions, and context from before this summary. Do not redo work already completed.
 ```
 
-A section only appears when it has something to say; a session with no git commits has no `[Commits]`.
+A section only appears when it has something to say; a session with no git commits has no `[Commits]`. A codemode call in the brief uses the bounded intent/tool line shown above; ordinary tool calls keep the upstream one-line format.
 
 | Section | Contents |
 |---|---|
@@ -137,6 +203,12 @@ vcc_recall({ query: "hook|inject" })                 // regex
 vcc_recall({ query: "auth token", scope: "all" })    // all lineages
 ```
 
+In a codemode session, a query also matches text that appeared only inside a nested call, such as a file read or a failed command:
+
+```
+vcc_recall({ query: "tests/auth.test.ts" })
+```
+
 The `#N` refs in a summary, such as `(#1253)`, are the same numbers recall uses, so the agent can go straight to them:
 
 ```
@@ -158,7 +230,7 @@ The same search as a slash command, with results shown in the chat and passed to
 
 1. Pick the cut: everything before the kept tail is summarized, the tail stays as is.
 2. Normalize Pi messages into uniform blocks and drop noise (system messages, empty blocks).
-3. Extract the sections and the brief transcript, and format them.
+3. Extract the sections and the brief transcript, and format them. For codemode messages, add the bounded script preview and nested-call line.
 4. If there is a previous summary, merge into it.
 
 No step calls a model, and token counts are estimated from the session's own numbers.
@@ -185,9 +257,43 @@ Config lives at `pi-vcc-config.json` in Pi's agent directory (`~/.pi/agent`, or 
 - **`skipCustomTypes`** *(default `[]`)*: `customType` values of `custom_message` entries to leave out of the summary, for per-turn boilerplate other extensions inject (skill cards, guidance blocks). Exact, case-sensitive match; look for `"type":"custom_message"` in your session file to find the value. Only the summary input changes, not the cut.
 - **`trackCommands`** *(default `[]`)*: commands to remember across compactions, listed in a `[Tracked Commands]` section. Any command or prefix works: `["ssh", "kubectl", "docker"]`, `["psql", "./deploy.sh"]`, or `"gh pr"` (matches `gh pr merge`, not `gh run`). Each entry is the command as written, up to the next shell separator outside quotes, with any `sudo`/`env`/`VAR=` prefix kept; the 10 most recent per command are kept. Only `bash` calls are read, and only `ssh` remote commands are looked into, not `sh -c` or `docker exec`. Empty = off.
 
+## Compatibility and limits
+
+- **Pi 1.0 or newer** is required. The fork starts from pi-vcc 0.10.2 and drops the old automatic post-compaction continue fallback: Pi 1.0 resumes the run itself. The marker left in older sessions is still filtered.
+- **Non-codemode sessions are unchanged.** Rendering, the brief, search, cut selection and settings match upstream; golden tests pin the upstream output.
+- **Script previews are head-only.** Recall shows 300 chars in the list and 1,500 in expand. A long script's tail is not reachable through recall yet.
+- **Nested rendering is bounded.** The list shows the last 12 calls, expand shows the last 32. Search indexes the record up to 2,000 chars per result. Pi may also save an incomplete record; the output marks it as `[record incomplete]`.
+- **The brief's tool names are declarations.** They are scanned from `tools.<name>(...)` in the source, including text in comments, not from execution. Use the nested status for what actually happened.
+- **No codemode store projection and no new recall parameters.** This release only makes the existing record readable and searchable.
+
+## Verification
+
+At the 0.1.0 release, `bun test` passes 485 tests on Pi 1.4.0 and on Pi 1.0.0, and `bun run typecheck` passes on both hosts.
+
+A small real-session check on Pi 1.4.0 (`huawei/deepseek-v4.1-flash`, codemode `mode:"only"`, `inlineBudget: 5000`, forced compaction) showed:
+
+- upstream brief `* codemode` versus fork brief `* codemode -> read, bash | goal: <intent>`; summary length 708 vs 733 chars, so the intent did not cost extra size in that pair;
+- with no goal instruction in the prompt, the fork's model wrote `// goal:` on its own while the upstream model did not (fork 742 vs upstream 716 chars);
+- after compaction, a codemode script called `tools.vcc_recall`, got 4 `#N` matches with nested status `ok`, and continued without redoing the work.
+
+Those are two paired runs, not a statistical result. The benefit is directional and visible, not a guarantee for every model or task.
+
 ## Benchmarks
 
-Benchmarks comparing the ranked brief with the 0.3.18 baseline (recall, fact density, precision, size) are in [`benchmarks/README.md`](./benchmarks/README.md).
+The inherited compaction engine is measured against the 0.3.18 baseline in [`benchmarks/README.md`](./benchmarks/README.md). The pi-vcc column below comes from upstream's measurements over 1,884 real sessions (summary chars vs the summarized conversation); codemode rendering adds bounded lines and does not change the cut or the section extractors.
+
+|  | Pi default | pi-vcc-codemode |
+|---|---|---|
+| **Method** | LLM-generated summary | Algorithmic extraction, no LLM |
+| **Determinism** | Non-deterministic, can hallucinate | Same input, same output |
+| **Size reduction** | Varies | 97.6% median, 89% at p10 |
+| **Compaction latency** | Waits for an LLM call | 1 ms median, 11 ms p90, 348 ms worst |
+| **Cost** | Burns tokens on the summarization call | None |
+| **History after compaction** | Gone, the agent only sees the summary | Searchable with `vcc_recall` |
+| **Repeated compactions** | Each rewrite risks losing more | Sections merge and stay capped |
+| **Structure** | Free-form prose | Up to 6 sections + a brief transcript |
+
+![pi-vcc-codemode demo](https://raw.githubusercontent.com/qwased/pi-vcc-codemode/master/demo.gif)
 
 ## Acknowledgments
 

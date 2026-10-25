@@ -19,11 +19,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/qwased/pi-vcc.git"
+    "url": "git+https://github.com/qwased/pi-vcc-codemode.git"
   },
-  "homepage": "https://github.com/qwased/pi-vcc#readme",
+  "homepage": "https://github.com/qwased/pi-vcc-codemode#readme",
   "bugs": {
-    "url": "https://github.com/qwased/pi-vcc/issues"
+    "url": "https://github.com/qwased/pi-vcc-codemode/issues"
   },
   "publishConfig": {
     "access": "public"

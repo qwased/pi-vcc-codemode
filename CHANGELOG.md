@@ -4,6 +4,10 @@ All notable changes to `pi-vcc-codemode` are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Repository moved to `qwased/pi-vcc-codemode`** — package metadata, install links and the demo URL now point at the renamed repository. The README also documents the codemode pain point, the before/after difference from upstream, the two-layer gating model and the current limits.
+
 ## [0.1.0] - 2026-10-25
 
 First release of the codemode-aware fork, based on `@sting8k/pi-vcc` 0.10.2.
