@@ -273,7 +273,7 @@ Config lives at `pi-vcc-config.json` in Pi's agent directory (`~/.pi/agent`, or 
 
 At the 0.1.1 release, `bun test` passes 485 tests on Pi 1.4.0 and on Pi 1.0.0, and `bun run typecheck` passes on both hosts. 0.1.1 is a documentation and metadata release; runtime behavior is unchanged from 0.1.0.
 
-The unreleased codemode brief changes pass 517 tests and typecheck on both Pi 1.4.0 and Pi 1.0.0. An offline audit of 6 local codemode-only sessions (`scripts/codemode-brief-audit.ts`, aggregates only) found that the 1,000-character allowance lowers codemode-line discard from 47% (141/301 lines) to 17% (52/301); every ref of a still-dropped line fell inside the marker's range. The same audit measured merge pressure: the fresh brief's median line count grew from 75 to 86.5, leaving the previous summary a median of 33.5 of the 120 merge lines instead of 45.
+The 0.1.2 release passes 517 tests and typecheck on both Pi 1.4.0 and Pi 1.0.0. An offline audit of 6 local codemode-only sessions (`scripts/codemode-brief-audit.ts`, aggregates only) found that the 1,000-character allowance lowers codemode-line discard from 47% (141/301 lines) to 17% (52/301); every ref of a still-dropped line fell inside the marker's range. The same audit measured merge pressure: the fresh brief's median line count grew from 75 to 86.5, leaving the previous summary a median of 33.5 of the 120 merge lines instead of 45.
 
 A small real-session check on Pi 1.4.0 (`huawei/deepseek-v4.1-flash`, codemode `mode:"only"`, `inlineBudget: 5000`, forced compaction) showed:
 

@@ -4,6 +4,8 @@ All notable changes to `pi-vcc-codemode` are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-26
+
 ### Changed
 
 - **Codemode steps survive the brief's 8-line cap** — after keeping the last 8 tool lines of an assistant segment, codemode lines immediately before them are restored within a 1,000-character allowance. When lines are still dropped, the omission marker names the `vcc_recall` range that holds them, for example `* (2 earlier tool-call entries omitted; recall range:[1, 18])`. Direct tool lines keep upstream behavior; the marker is unchanged when no codemode line was dropped.

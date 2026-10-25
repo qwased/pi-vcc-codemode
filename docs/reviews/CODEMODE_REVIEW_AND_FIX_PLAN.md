@@ -4,7 +4,7 @@
 - 对象：pi-vcc-codemode 0.1.1（仓库 HEAD `ae24f6b`，复核时工作区干净）
 - 输入：用户真实反馈《pi-vcc-codemode 0.1.1 真实工作测试与行为核对报告》（同目录 `PI-VCC-CODEMODE-EVALUATION-REPORT.md`，2026-10-25，下称"评估报告"）
 - 对照：上游 `@sting8k/pi-vcc` v0.10.2 源码（评估报告用 `git archive` 解包的副本，位于与仓库同级的评估目录 `.pi-eval/upstream`）；宿主 `@earendil-works/pi-coding-agent` 1.4.0（`bun.lock` 锁定版本）
-- 状态：复核结论与修正计划。A–H 已实施，G3/I 未完成，实施状态见 [`../plans/CODEMODE_LONG_HORIZON_PLAN.md`](../plans/CODEMODE_LONG_HORIZON_PLAN.md) §11。本文件归档于 `docs/reviews/`。
+- 状态：复核结论与修正计划。A–H 已实施并随 0.1.2 发布，G3/I 未完成，实施状态见 [`../plans/CODEMODE_LONG_HORIZON_PLAN.md`](../plans/CODEMODE_LONG_HORIZON_PLAN.md) §11。本文件归档于 `docs/reviews/`。
 
 > 归档说明（2026-10-26）：本文件从仓库根目录移入 `docs/reviews/`，正文保留起草时的判断与时点；文中引用的 `CODEMODE_LONG_HORIZON_PLAN.md` 现位于 `docs/plans/`。
 
