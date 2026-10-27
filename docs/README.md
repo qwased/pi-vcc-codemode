@@ -3,9 +3,17 @@
 本目录保存开发计划、外部复核、评估报告和补丁记录。这些是历史工作笔记，不是安装或使用文档；当前行为以仓库根目录的 `README.md` 和 `CHANGELOG.md` 为准。
 
 - [plans/CODEMODE_LONG_HORIZON_PLAN.md](plans/CODEMODE_LONG_HORIZON_PLAN.md) — codemode 长程任务改进计划、阶段门与实施状态。
+- [plans/CODEMODE_0.1.3_PLAN.md](plans/CODEMODE_0.1.3_PLAN.md) — 0.1.3 工作计划第五稿：版本定位、候选机制与工期，实施顺序已被执行计划取代。
+- [plans/CODEMODE_0.1.3_PLAN_REVIEW.md](plans/CODEMODE_0.1.3_PLAN_REVIEW.md) — 第五稿可行性审阅：数据管道、兼容契约、验收口径与工期，结论为需较大修订。
+- [plans/CODEMODE_0.1.3_FIRST_PRINCIPLES_REVIEW.md](plans/CODEMODE_0.1.3_FIRST_PRINCIPLES_REVIEW.md) — 第一性原理评估与重建建议：收缩 0.1.3 范围，暂不重写整个压缩系统。
+- [plans/CODEMODE_0.1.3_FINAL_REVIEW.md](plans/CODEMODE_0.1.3_FINAL_REVIEW.md) — 最终审阅与决策记录：逐条裁定前序评审并定下实施基线。
+- [plans/CODEMODE_0.1.3_EXECUTION_PLAN.md](plans/CODEMODE_0.1.3_EXECUTION_PLAN.md) — 0.1.3 执行计划：可交接的实施项、验收方式、预算与源码基线，当前实施依据。
+- [plans/暂时不做，仅留档.md](plans/暂时不做，仅留档.md) — 早期 Current Task 连续性方案草稿，本版不实施，仅留档。
 - [reviews/CODEMODE_REVIEW_AND_FIX_PLAN.md](reviews/CODEMODE_REVIEW_AND_FIX_PLAN.md) — 2026-10-26 外部复核、结论核实与修正计划。
 - [reviews/PI-VCC-CODEMODE-EVALUATION-REPORT.md](reviews/PI-VCC-CODEMODE-EVALUATION-REPORT.md) — 0.1.1 真实工作测试与行为核对报告。
 - [reviews/pi-vcc-codemode-long-horizon-review.md](reviews/pi-vcc-codemode-long-horizon-review.md) — 长程任务可寻回性、工作记录与目标保持审阅。
+- [reviews/CODEMODE_0.1.2_DISCUSSION_RECORD.md](reviews/CODEMODE_0.1.2_DISCUSSION_RECORD.md) — 0.1.2 讨论记录：预算上限、第 N 次压缩可见性缺口、中文提取与截断边界。
+- [reviews/CODEMODE_0.1.2_FIELD_NOTES.md](reviews/CODEMODE_0.1.2_FIELD_NOTES.md) — 0.1.2 现场札记：一次真实压缩的汇总数字、A/C/D/E/F 的验证结果与缺口建议。
 - [patches/pi-vcc-codemode-patch.md](patches/pi-vcc-codemode-patch.md) — 上游 0.10.2 本地保真度补丁记录（已并入本 fork）。
 
 归档时已删除本机绝对路径和会话文件名；这里不包含会话正文。
