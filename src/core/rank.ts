@@ -5,7 +5,7 @@ import {
   heredocCloseIndex,
   renderTextCandidate,
   renderToolCandidate,
-  renderTextOmissionMarker,
+  formatTextOmissionMarker,
   renderToolOmissionMarker,
   BRIEF_MIN_TEXT_CHARS,
   BRIEF_TEXT_STEP_CHARS,
@@ -327,7 +327,63 @@ const toolCost = (candidate: BriefCandidate, version: "short" | "normal"): numbe
   wrapLongLines(renderToolCandidate(candidate, version)).length + 1;
 const markerCost = (text: string): number => wrapLongLines(text).length + 1;
 
-const allocateTextRole = (roleCandidates: BriefCandidate[], quota: number): TextAllocation => {
+/**
+ * Costs are exact only after wrapping, and the allocator asks for the same
+ * (candidate, keep) pair many times while it retries and upgrades. One meter
+ * per `allocateBriefBudget` call removes that repeated grapheme scan; it is
+ * released with the call, so nothing is cached across compactions.
+ */
+interface CostMeter {
+  text(candidate: BriefCandidate, keepChars: number): number;
+  tool(candidate: BriefCandidate, version: "short" | "normal"): number;
+  marker(text: string): number;
+}
+
+const createCostMeter = (): CostMeter => {
+  const textCosts = new WeakMap<BriefCandidate, Map<number, number>>();
+  const toolCosts = new WeakMap<BriefCandidate, Map<"short" | "normal", number>>();
+  const markerCosts = new Map<string, number>();
+
+  return {
+    text(candidate, keepChars) {
+      let perCandidate = textCosts.get(candidate);
+      if (!perCandidate) {
+        perCandidate = new Map();
+        textCosts.set(candidate, perCandidate);
+      }
+      const cached = perCandidate.get(keepChars);
+      if (cached !== undefined) return cached;
+      const value = textCost(candidate, keepChars);
+      perCandidate.set(keepChars, value);
+      return value;
+    },
+    tool(candidate, version) {
+      let perCandidate = toolCosts.get(candidate);
+      if (!perCandidate) {
+        perCandidate = new Map();
+        toolCosts.set(candidate, perCandidate);
+      }
+      const cached = perCandidate.get(version);
+      if (cached !== undefined) return cached;
+      const value = toolCost(candidate, version);
+      perCandidate.set(version, value);
+      return value;
+    },
+    marker(text) {
+      const cached = markerCosts.get(text);
+      if (cached !== undefined) return cached;
+      const value = markerCost(text);
+      markerCosts.set(text, value);
+      return value;
+    },
+  };
+};
+
+const allocateTextRole = (
+  roleCandidates: BriefCandidate[],
+  quota: number,
+  meter: CostMeter,
+): TextAllocation => {
   if (roleCandidates.length === 0) {
     return { keep: new Map(), folded: [], used: 0, full: true };
   }
@@ -336,8 +392,8 @@ const allocateTextRole = (roleCandidates: BriefCandidate[], quota: number): Text
   const entries = roleCandidates.map((candidate) => {
     const length = candidate.sourceText.length;
     const minKeep = Math.min(length, BRIEF_MIN_TEXT_CHARS);
-    const minCost = textCost(candidate, minKeep);
-    const fullCost = textCost(candidate, length);
+    const minCost = meter.text(candidate, minKeep);
+    const fullCost = meter.text(candidate, length);
     const keep = fullCost <= minCost ? length : minKeep;
     return { candidate, length, keep, cost: Math.min(minCost, fullCost) };
   });
@@ -347,21 +403,39 @@ const allocateTextRole = (roleCandidates: BriefCandidate[], quota: number): Text
   let used = entries.reduce((sum, entry) => sum + entry.cost, 0);
 
   if (used > quota) {
+    // Prefix sums plus an incremental ref range. The old loop rebuilt the
+    // omitted slice for every fold, so both the allocations and the marker
+    // scans grew quadratically with the number of candidates.
+    const prefix = new Array<number>(entries.length + 1);
+    prefix[0] = 0;
+    for (let i = 0; i < entries.length; i++) prefix[i + 1] = prefix[i] + entries[i].cost;
+    const allCost = prefix[entries.length];
+    let minRef = Number.POSITIVE_INFINITY;
+    let maxRef = Number.NEGATIVE_INFINITY;
+    let allNumeric = true;
+
     for (fold = 1; fold <= entries.length; fold++) {
-      const folded = entries.slice(0, fold).map((entry) => entry.candidate);
-      const nextMarker = renderTextOmissionMarker(role, folded);
-      const keptCost = entries.slice(fold).reduce((sum, entry) => sum + entry.cost, 0);
-      if (markerCost(nextMarker) + keptCost <= quota) {
+      const ref = entries[fold - 1].candidate.sourceIndex;
+      if (typeof ref === "number") {
+        if (ref < minRef) minRef = ref;
+        if (ref > maxRef) maxRef = ref;
+      } else {
+        allNumeric = false;
+      }
+      const nextMarker = formatTextOmissionMarker(role, fold, allNumeric ? { min: minRef, max: maxRef } : null);
+      const keptCost = allCost - prefix[fold];
+      const nextMarkerCost = meter.marker(nextMarker);
+      if (nextMarkerCost + keptCost <= quota) {
         marker = nextMarker;
-        used = markerCost(marker) + keptCost;
+        used = nextMarkerCost + keptCost;
         break;
       }
     }
     if (fold > entries.length) {
       // Not even the newest minimum fits: fold everything, keep only the marker.
       fold = entries.length;
-      marker = renderTextOmissionMarker(role, entries.map((entry) => entry.candidate));
-      used = markerCost(marker);
+      marker = formatTextOmissionMarker(role, entries.length, allNumeric ? { min: minRef, max: maxRef } : null);
+      used = meter.marker(marker);
     }
   }
 
@@ -372,7 +446,7 @@ const allocateTextRole = (roleCandidates: BriefCandidate[], quota: number): Text
   let remaining = quota - used;
   const upgrades = kept
     .filter((entry) => entry.keep < entry.length)
-    .map((entry) => ({ entry, delta: textCost(entry.candidate, entry.length) - textCost(entry.candidate, entry.keep) }))
+    .map((entry) => ({ entry, delta: meter.text(entry.candidate, entry.length) - meter.text(entry.candidate, entry.keep) }))
     .sort((a, b) => a.delta - b.delta || b.entry.candidate.order - a.entry.candidate.order);
   for (const upgrade of upgrades) {
     if (upgrade.delta <= 0) {
@@ -393,7 +467,7 @@ const allocateTextRole = (roleCandidates: BriefCandidate[], quota: number): Text
       const current = keep.get(entry.candidate.key)!;
       if (current >= entry.length) continue;
       const next = Math.min(entry.length, current + BRIEF_TEXT_STEP_CHARS);
-      const delta = textCost(entry.candidate, next) - textCost(entry.candidate, current);
+      const delta = meter.text(entry.candidate, next) - meter.text(entry.candidate, current);
       if (delta > 0 && delta <= remaining) {
         keep.set(entry.candidate.key, next);
         remaining -= delta;
@@ -402,8 +476,8 @@ const allocateTextRole = (roleCandidates: BriefCandidate[], quota: number): Text
     }
   }
 
-  used = marker ? markerCost(marker) : 0;
-  for (const entry of kept) used += textCost(entry.candidate, keep.get(entry.candidate.key)!);
+  used = marker ? meter.marker(marker) : 0;
+  for (const entry of kept) used += meter.text(entry.candidate, keep.get(entry.candidate.key)!);
   const full = kept.length === entries.length &&
     kept.every((entry) => keep.get(entry.candidate.key) === entry.length);
 
@@ -416,7 +490,11 @@ const allocateTextRole = (roleCandidates: BriefCandidate[], quota: number): Text
   };
 };
 
-const allocateToolRole = (toolCandidates: BriefCandidate[], quota: number): ToolAllocation => {
+const allocateToolRole = (
+  toolCandidates: BriefCandidate[],
+  quota: number,
+  meter: CostMeter,
+): ToolAllocation => {
   if (toolCandidates.length === 0) {
     return { selected: new Map(), omitted: [], used: 0, full: true };
   }
@@ -430,7 +508,7 @@ const allocateToolRole = (toolCandidates: BriefCandidate[], quota: number): Tool
   let errorUsed = 0;
   for (const candidate of sorted) {
     if (!candidate.evidence?.observedError) continue;
-    const cost = toolCost(candidate, "short");
+    const cost = meter.tool(candidate, "short");
     if (errorUsed + cost <= errorReserve && cost <= remaining) {
       selected.set(candidate.key, "short");
       errorUsed += cost;
@@ -439,7 +517,7 @@ const allocateToolRole = (toolCandidates: BriefCandidate[], quota: number): Tool
   }
   for (const candidate of sorted) {
     if (selected.has(candidate.key)) continue;
-    const cost = toolCost(candidate, "short");
+    const cost = meter.tool(candidate, "short");
     if (cost <= remaining) {
       selected.set(candidate.key, "short");
       remaining -= cost;
@@ -447,7 +525,7 @@ const allocateToolRole = (toolCandidates: BriefCandidate[], quota: number): Tool
   }
   for (const candidate of sorted) {
     if (selected.get(candidate.key) !== "short") continue;
-    const delta = toolCost(candidate, "normal") - toolCost(candidate, "short");
+    const delta = meter.tool(candidate, "normal") - meter.tool(candidate, "short");
     if (delta > 0 && delta <= remaining) {
       selected.set(candidate.key, "normal");
       remaining -= delta;
@@ -457,8 +535,8 @@ const allocateToolRole = (toolCandidates: BriefCandidate[], quota: number): Tool
   let omitted = toolCandidates.filter((candidate) => !selected.has(candidate.key));
   let marker = omitted.length > 0 ? renderToolOmissionMarker(omitted) : "";
   const usedNow = (): number => {
-    let total = marker ? markerCost(marker) : 0;
-    for (const [key, version] of selected) total += toolCost(byKey.get(key)!, version);
+    let total = marker ? meter.marker(marker) : 0;
+    for (const [key, version] of selected) total += meter.tool(byKey.get(key)!, version);
     return total;
   };
   let used = usedNow();
@@ -491,6 +569,12 @@ const allocateToolRole = (toolCandidates: BriefCandidate[], quota: number): Tool
   };
 };
 
+const minOrder = (candidates: BriefCandidate[]): number => {
+  let min = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) if (candidate.order < min) min = candidate.order;
+  return min;
+};
+
 const assembleBriefBody = (
   candidates: BriefCandidate[],
   textAllocations: { user: TextAllocation; assistant: TextAllocation },
@@ -519,7 +603,7 @@ const assembleBriefBody = (
   }
   if (tools.marker && tools.omitted.length > 0) {
     items.push({
-      order: Math.min(...tools.omitted.map((candidate) => candidate.order)) - 0.5,
+      order: minOrder(tools.omitted) - 0.5,
       role: "assistant",
       text: tools.marker,
     });
@@ -635,18 +719,27 @@ const assembleBriefBody = (
   };
 };
 
-const allocateOnce = (candidates: BriefCandidate[], bodyBudget: number): BriefSelection => {
+const allocateOnce = (
+  candidates: BriefCandidate[],
+  bodyBudget: number,
+  meter: CostMeter,
+): BriefSelection => {
   if (candidates.length === 0) {
     return { kind: "ok", text: "", usedChars: 0, reservedChars: 0, counts: {} };
   }
 
-  const cheapest = Math.min(...candidates.map((candidate) =>
-    candidate.role === "tool"
-      ? toolCost(candidate, "short")
+  // A loop, not Math.min(...spread): a session with a six-figure number of
+  // blocks would exceed the host's argument limit, and this scan runs first.
+  let cheapest = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    const cost = candidate.role === "tool"
+      ? meter.tool(candidate, "short")
       : Math.min(
-          textCost(candidate, Math.min(candidate.sourceText.length, BRIEF_MIN_TEXT_CHARS)),
-          textCost(candidate, candidate.sourceText.length),
-        )));
+          meter.text(candidate, Math.min(candidate.sourceText.length, BRIEF_MIN_TEXT_CHARS)),
+          meter.text(candidate, candidate.sourceText.length),
+        );
+    if (cost < cheapest) cheapest = cost;
+  }
   if (bodyBudget < cheapest) {
     return { kind: "budget-too-small", text: "", usedChars: 0, reservedChars: 0, counts: { budgetChars: bodyBudget } };
   }
@@ -659,9 +752,9 @@ const allocateOnce = (candidates: BriefCandidate[], bodyBudget: number): BriefSe
   let assistantQuota = Math.floor(bodyBudget * 0.3);
   let toolQuota = bodyBudget - userQuota - assistantQuota;
 
-  let userAlloc = allocateTextRole(users, userQuota);
-  let assistantAlloc = allocateTextRole(assistants, assistantQuota);
-  let toolAlloc = allocateToolRole(tools, toolQuota);
+  let userAlloc = allocateTextRole(users, userQuota, meter);
+  let assistantAlloc = allocateTextRole(assistants, assistantQuota, meter);
+  let toolAlloc = allocateToolRole(tools, toolQuota, meter);
 
   // Borrow unused quota, in order, only into roles that are not fully kept.
   for (let pass = 0; pass < 2; pass++) {
@@ -670,7 +763,7 @@ const allocateOnce = (candidates: BriefCandidate[], bodyBudget: number): BriefSe
     let progressed = false;
 
     if (!userAlloc.full) {
-      const next = allocateTextRole(users, userAlloc.used + unused);
+      const next = allocateTextRole(users, userAlloc.used + unused, meter);
       if (next.used > userAlloc.used) {
         userQuota = userAlloc.used + unused;
         userAlloc = next;
@@ -680,7 +773,7 @@ const allocateOnce = (candidates: BriefCandidate[], bodyBudget: number): BriefSe
     }
     if (unused <= 0) break;
     if (!assistantAlloc.full) {
-      const next = allocateTextRole(assistants, assistantAlloc.used + unused);
+      const next = allocateTextRole(assistants, assistantAlloc.used + unused, meter);
       if (next.used > assistantAlloc.used) {
         assistantQuota = assistantAlloc.used + unused;
         assistantAlloc = next;
@@ -690,7 +783,7 @@ const allocateOnce = (candidates: BriefCandidate[], bodyBudget: number): BriefSe
     }
     if (unused <= 0) break;
     if (!toolAlloc.full) {
-      const next = allocateToolRole(tools, toolAlloc.used + unused);
+      const next = allocateToolRole(tools, toolAlloc.used + unused, meter);
       if (next.used > toolAlloc.used) {
         toolQuota = toolAlloc.used + unused;
         toolAlloc = next;
@@ -726,10 +819,11 @@ export const allocateBriefBudget = (
   // Content costs are exact after wrapping; the remaining difference is the
   // [user]/[assistant] section structure. Reserve the structure measured in
   // the previous attempt so a wrapped body never silently overshoots.
+  const meter = createCostMeter();
   let structure = 0;
   let last: BriefSelection | undefined;
   for (let attempt = 0; attempt < 8; attempt++) {
-    const selection = allocateOnce(candidates, total - structure);
+    const selection = allocateOnce(candidates, total - structure, meter);
     last = selection;
     if (selection.kind === "budget-too-small") break;
     if (selection.usedChars <= total) {

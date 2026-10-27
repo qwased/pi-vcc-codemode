@@ -212,3 +212,42 @@ docs_plans_PERF_FIX_ALLOCATOR_AND_TEST_PROBES.md...   d036bc8f23a45ec4（v1 计�
 1. **P0**：`package.json` `files` 负模式 + `.gitignore` `*.bak`（建议批准，1 行改动，立即让发布包不含备份）；是否同时删除 17 个遗留 `.bak`（156,387 B）？
 2. **P1**：确认 D1–D4 修订结论（F1.a+b+c、删 F1.d、删 F2.a、F2.b 方案 A）。
 3. **P2**：`CHANGELOG` 是否记入内部性能条目。
+
+## 11. 执行记录（2026-10-28，已批准范围全部落地）
+
+### 11.1 结果
+
+| 项 | 现状（改动前） | 结果 | 门 |
+|---|---|---|---|
+| `allocateBriefBudget` p50 / p95 | 140.74 / ~174ms | **14.26 / 18.62ms** | ≤60 / ≤90 ✅ |
+| `compileRanked` 新路径 p50（`perf-probe-breakdown`） | 185.84ms | **20.82ms** | ≤80 ✅ |
+| 其中分配器（同一 harness） | 185.59ms | **19.08ms** | — |
+| 旧路径 `compileRanked` | 3.6ms | 未改动（3.6ms） | ≤3.8 ✅ |
+| `--synthetic --timing` p95 | 194ms（0.1.3 记录） | **20.88 / 21.17ms** | ≤1500 ✅ |
+| tarball | 68 文件 / 562,874 B / 17 个 `.bak`（HEAD + 备份迁出后） | **50 文件 / 405,047 B / 0 个 `.bak`** | 干净 ✅ |
+| `src/` 不可达模块 | 1（`core/report.ts`） | **0**（46/46 可达） | 0 ✅ |
+| 测试 | 622 pass | **867 pass / 0 fail**（622 + 243 golden + 2 guard） | ≥622 ✅ |
+
+### 11.2 等价性证据
+
+- `tests/fixtures/allocator-golden.json` 由**未修改**实现生成：242 例（12 手工边界 + 30 小随机 + 200 种子随机），其中 32 例 `budget-too-small`、15 例带 `scan saved history #a..#b`、11 例无区间标记、137 例触发 ≥2 次重试（最多 5 次）。
+- `research/verify-before-after.ts`：改动后的 `allocateBriefBudget` 与改动前副本在 **1800 消息 / 1797 候选** 夹具和全部 242 例上 `text`/`kind`/`usedChars`/`reservedChars`/`counts` 完全一致。
+- 重试路径核对：`research/rank-timed.ts`（改动前带计数副本）与生产实现在 242 例上 0 差异，重试直方图 `{1:105, 2:67, 3:50, 4:15, 5:5}`。
+
+### 11.3 与计划的偏差（均已处理）
+
+1. **守卫测试先误报**：正则命中了我解释优化原因时写的注释 `Math.min(...spread)`。测试改为扫描前剥离注释，注释也保留（它解释了为什么不用展开）。
+2. **守卫测试额外发现两处展开点**：`brief.ts` 的 `omissionMarker`（`droppedRefs`/`keptRefs` 的 `Math.min/max`）。计划只列了三处，实际四处；一并改为 `refBounds` 循环，守卫测试两个文件才全绿。
+3. **F1.b 收益大于预估**：只有记忆化的对照测得 51.51ms，曾据此推断折叠改造只能再省几毫秒；实测折叠改造把 63.35ms 拉到 14.81ms。原因是记忆化后剩余时间几乎全在折叠循环的 `slice+map+标记渲染`（1797 候选的二次开销），而不是轮转补齐。
+4. **`renderTextOmissionMarker` 保留但已无生产调用方**：按计划保留为 `formatTextOmissionMarker` 的兼容包装；它仍被旧的直接工具路径测试间接覆盖不到，属刻意保留的 API 形状。
+5. **F1.d / F2.a 未实施**：按修订范围删除；`before-compact.ts` 与 `package.json` 的备份仍在 `research/.backup/perf-fix/`，未使用。
+
+### 11.4 改动清单
+
+- 生产：`src/core/rank.ts`（CostMeter、前缀和折叠、两处循环取最小）、`src/core/brief.ts`（`formatTextOmissionMarker`、`numericRange`、`refBounds`）。
+- 迁移：`src/core/report.ts` → `tests/support/report.ts`（8 条相对导入 + 3 个引用方）。
+- 测试：新增 `tests/support/allocator-cases.ts`、`tests/fixtures/allocator-golden.json`、`tests/allocator-golden.test.ts`、`tests/spread-min-guard.test.ts`。
+- 打包：`package.json` `files` → `src/**/*.ts` + `!src/**/*.bak`；`.gitignore` 增 `*.bak`；删除 17 个遗留 `.bak`。
+- 文档：本计划 §11、`CHANGELOG.md` `[Unreleased]`、`AGENTS.md` 两条规则。
+
+按 §9.9，代码改动**未提交、未推送、未发布**。

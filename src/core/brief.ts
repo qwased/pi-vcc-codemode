@@ -446,14 +446,25 @@ const isCodemodeBriefLine = (line: string): boolean =>
  * entry range that holds the dropped calls and their results, so the agent
  * can recover the intent instead of only being told something is missing.
  */
+const refBounds = (values: number[]): { min: number; max: number } => {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    if (value < min) min = value;
+    if (value > max) max = value;
+  }
+  return { min, max };
+};
+
 const omissionMarker = (dropped: string[], firstKept: string | undefined, count: number): string => {
   const plain = `* (${count} earlier tool-call entries omitted)`;
   if (!dropped.some(isCodemodeBriefLine)) return plain;
   const droppedRefs = dropped.flatMap(briefLineRefs);
   if (droppedRefs.length === 0) return plain;
-  const start = Math.min(...droppedRefs);
+  const droppedBounds = refBounds(droppedRefs);
+  const start = droppedBounds.min;
   const keptRefs = firstKept ? briefLineRefs(firstKept) : [];
-  const end = keptRefs.length > 0 ? Math.min(...keptRefs) - 1 : Math.max(...droppedRefs);
+  const end = keptRefs.length > 0 ? refBounds(keptRefs).min - 1 : droppedBounds.max;
   if (end < start) return plain;
   return `* (${count} earlier tool-call entries omitted; recall range:[${start}, ${end}])`;
 };
@@ -763,15 +774,35 @@ export const renderToolCandidate = (candidate: BriefCandidate, version: "short" 
   return `* ${tool.name}${nav ? ` ${nav}` : ""}${ref}${error}`;
 };
 
-const searchRange = (candidates: BriefCandidate[]): string => {
-  const refs = candidates.map((c) => c.sourceIndex);
-  if (refs.length === 0 || refs.some((n) => typeof n !== "number")) return "";
-  const nums = refs as number[];
-  return `; scan saved history #${Math.min(...nums)}..#${Math.max(...nums)}`;
+/** Range of saved-history refs, or null when any entry has no index. */
+const numericRange = (candidates: BriefCandidate[]): { min: number; max: number } | null => {
+  if (candidates.length === 0) return null;
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const candidate of candidates) {
+    const ref = candidate.sourceIndex;
+    if (typeof ref !== "number") return null;
+    if (ref < min) min = ref;
+    if (ref > max) max = ref;
+  }
+  return { min, max };
 };
 
+const scanSuffix = (range: { min: number; max: number } | null): string =>
+  range ? `; scan saved history #${range.min}..#${range.max}` : "";
+
+/**
+ * Formatter for callers that track count/min/max incrementally; it allocates
+ * nothing beyond the marker string itself.
+ */
+export const formatTextOmissionMarker = (
+  role: "user" | "assistant",
+  count: number,
+  range: { min: number; max: number } | null,
+): string => `[${count} older ${role} ${count === 1 ? "message" : "messages"} omitted${scanSuffix(range)}]`;
+
 export const renderTextOmissionMarker = (role: "user" | "assistant", omitted: BriefCandidate[]): string =>
-  `[${omitted.length} older ${role} ${omitted.length === 1 ? "message" : "messages"} omitted${searchRange(omitted)}]`;
+  formatTextOmissionMarker(role, omitted.length, numericRange(omitted));
 
 export const renderToolOmissionMarker = (omitted: BriefCandidate[]): string =>
-  `* (${omitted.length} earlier tool-call entr${omitted.length === 1 ? "y" : "ies"} omitted${searchRange(omitted)})`;
+  `* (${omitted.length} earlier tool-call entr${omitted.length === 1 ? "y" : "ies"} omitted${scanSuffix(numericRange(omitted))})`;

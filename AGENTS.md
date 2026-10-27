@@ -45,3 +45,5 @@ Restore the locked host afterwards with `bun install --frozen-lockfile --ignore-
 - Tests that read settings set `PI_VCC_CONFIG_PATH` to a temp file, never the user's config. `tests/real-sessions.test.ts` runs only when `~/.pi/agent/sessions` exists.
 - `research/` is git-ignored local data (real sessions, replays). Never commit it or quote session content in commits or PRs.
 - Note user-facing changes in `CHANGELOG.md` under `[Unreleased]`.
+- `package.json` ships `src/**/*.ts`, so backups must never live in the published tree: keep them in the git-ignored `research/.backup/`, and keep `*.bak` excluded from `files`.
+- Do not reduce candidate lists with `Math.min(...array)` / `Math.max(...array)`; a long branch can exceed the host argument limit. `tests/spread-min-guard.test.ts` pins the allocator and marker files.
