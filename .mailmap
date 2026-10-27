@@ -1,0 +1,4 @@
+# Canonicalize fork author identity in git log / shortlog (history is not rewritten).
+# Canonical form first, then the legacy form it replaces:
+#   <canonical name> <canonical email> <alias name> <alias email>
+qwased <35343489+qwased@users.noreply.github.com> qwased <qwased@users.noreply.github.com>
