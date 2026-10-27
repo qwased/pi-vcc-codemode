@@ -71,10 +71,10 @@ The intent is read from the opening `//` comment block, at most three lines. `//
 ```js
 // @options: {"timeout_ms": 60000}
 // goal: <intended outcome>
-// blocked: <optional, recent-signal only>
+// blocked: <reserved signal; no prompt asks for it>
 ```
 
-The markers are matched case-insensitively and tolerate whitespace (`//goal:`, `// GOAL :`). The parser stops at the first non-empty, non-comment line, so comments in the body are not scanned. `// goal:` is shown as `intent:`, capped at 200 chars; without it the brief falls back to a `code:` preview of at most 80 chars. `// blocked:` is never rendered and never enters `[Outstanding Context]`; it can only add a small score when the event is in the recent quarter, and repeated markers do not accumulate. Neither marker is proof of success or current state.
+The markers are matched case-insensitively and tolerate whitespace (`//goal:`, `// GOAL :`). The parser stops at the first non-empty, non-comment line, so comments in the body are not scanned. `// goal:` is shown as `intent:`, capped at 200 chars; without it the brief falls back to a `code:` preview of at most 80 chars. `// blocked:` is never rendered and never enters `[Outstanding Context]`; it can only add a small score when the event is in the recent quarter, and repeated markers do not accumulate. No prompt guideline asks for `// blocked:`: it is a reserved signal that only scores when a script happens to carry one, so a session where it never appears is the expected case. Neither marker is proof of success or current state.
 
 The guideline asks the model to write the goal in the same language as the user's request and to describe intent, not success. Model compliance is not guaranteed. If the marker is missing, the script still compacts and renders through the code-preview fallback.
 
