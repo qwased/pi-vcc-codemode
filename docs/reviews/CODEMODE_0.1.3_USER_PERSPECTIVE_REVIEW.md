@@ -8,7 +8,7 @@
 
 ## 0. 摘要
 
-本机实际运行的 0.1.3 与仓库 HEAD 不是同一份代码：dist 里没有 `CostMeter`，还带着 `src/core/report.ts`。在同一份真实会话上交替对照，两者输出逐字相同（6 次 sha256 一致），HEAD 端到端快 7–15%，说明性能修复在真实数据上安全；但这个规模（264 条消息）用户基本感觉不到收益。使用中确认 5 个用户可见问题，其中两件值得在 0.1.4 处理：压缩元数据 `details.sections` 被摘要正文污染，以及“本地 dist 与发布包同版本号却不同实现”的身份混乱。
+本机实际运行的 0.1.3 与仓库 HEAD 不是同一份代码：dist 里没有 `CostMeter`，还带着 `src/core/report.ts`。在同一份真实会话上交替对照，两者输出逐字相同（6 次 sha256 一致），HEAD 端到端快 7–15%，说明性能修复在真实数据上安全；但这个规模（264 条消息）用户基本感觉不到收益。使用中确认 6 个用户可见问题，其中两件值得在 0.1.4 处理：压缩元数据 `details.sections` 被摘要正文污染，以及“本地 dist 与发布包同版本号却不同实现”的身份混乱。
 
 ## 1. 方法
 
@@ -90,6 +90,14 @@
 - `/pi-vcc` 与 `/pi-vcc-recall` 均 exit 0、stdout 0 字节。
 - 成功证据只在会话条目里（compaction 条目；`custom_message` 2643 字符）。TUI 有 toast，CI/脚本化场景没有回执。
 
+### D6（文案）忽略参数的提示没说清实际执行了什么
+
+- 机制是有意设计：`mode` 在 schema 里只有 `hybrid | touched`（`src/tools/recall.ts:88-93`），`prepareArguments` 在 pi 校验前修复参数（`src/tools/recall.ts:95-96`，注释：repairable mistakes never reach the agent as errors）；非法值由 `drop()` 记入 `_vccDropped`（`src/core/recall-request.ts:131`），`ignoredNote` 在结果前打印（`src/core/recall-run.ts:166-172`，注释：so nothing is dropped silently）。
+- 实测：传 `mode:"scan"` 返回首行 `Ignored: mode "scan" (use 'touched' or leave it out).`，随后是 hybrid 的 5 条命中。行为正确，不是静默降级；我先前的判断有误，已在 §9 更正。
+- 残留问题：提示只说了“忽略了什么”，没说“实际跑了什么”。调用者以为在做全文扫描，实际拿到 hybrid 查询，只能从结果形状（5 条/页、片段）反推。
+- 覆盖面：`tests/recall-request.test.ts:60-88` 覆盖了 `_vccDropped` 与 `ignoredNote` 的通用机制，但没有用例钉住 `mode:"scan"` 这个最容易误传的值。
+- 建议文案：`Ignored: mode "scan"; ran hybrid query (use scan:true for a literal scan).`，并补 1 个用例。
+
 ## 6. 评价（判断，非测量）
 
 1. **“确定性压缩 + 可回溯”是这个插件真正的价值。** 它把“摘要一定丢东西”变成可对账的事实：`#N` 跨压缩稳定，压缩三次后仍能取回原条目。相比让模型写摘要，这条路便宜、可复现、可验证。
@@ -139,3 +147,9 @@
 - 未做 >1000 条消息的端到端压力测试；性能数字来自 264 条消息与本仓库的合成基准。
 - 未验证 `npm` 安装后的包行为；本次对象是本地 `dist/` 副本与仓库源码。
 - `D1`、`D3` 的修复未实现，也未加回归测试；本文只记录现状。
+
+## 9. 后续核实与更正
+
+- **撤回“searchTools 返回类型有问题”。** `docs/codemode.md:32` 写明 `searchTools` resolves to `{ name, description }[]`；实测返回正是该数组。`[object Object]` 来自我用字符串拼接数组，与插件无关。
+- **更正“`mode:'scan'` 静默降级”。** 见 D6：参数修复加显式提示是设计路径，有代码注释和测试支撑；真正剩下的是文案不完整（未指明实际动作）与缺一个专用用例。
+- 两条都来自 0.1.3 发布后的复核调用；记录在此，避免下游引用错误结论。

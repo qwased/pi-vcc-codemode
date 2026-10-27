@@ -16,7 +16,7 @@
 - [reviews/pi-vcc-codemode-long-horizon-review.md](reviews/pi-vcc-codemode-long-horizon-review.md) — 长程任务可寻回性、工作记录与目标保持审阅。
 - [reviews/CODEMODE_0.1.2_DISCUSSION_RECORD.md](reviews/CODEMODE_0.1.2_DISCUSSION_RECORD.md) — 0.1.2 讨论记录：预算上限、第 N 次压缩可见性缺口、中文提取与截断边界。
 - [reviews/CODEMODE_0.1.2_FIELD_NOTES.md](reviews/CODEMODE_0.1.2_FIELD_NOTES.md) — 0.1.2 现场札记：一次真实压缩的汇总数字、A/C/D/E/F 的验证结果与缺口建议。
-- [reviews/CODEMODE_0.1.3_USER_PERSPECTIVE_REVIEW.md](reviews/CODEMODE_0.1.3_USER_PERSPECTIVE_REVIEW.md) — 0.1.3 真实使用视角：A/B 等价性、召回体验与 5 个用户可见缺陷。
+- [reviews/CODEMODE_0.1.3_USER_PERSPECTIVE_REVIEW.md](reviews/CODEMODE_0.1.3_USER_PERSPECTIVE_REVIEW.md) — 0.1.3 真实使用视角：A/B 等价性、召回体验与 6 个用户可见缺陷。
 - [patches/pi-vcc-codemode-patch.md](patches/pi-vcc-codemode-patch.md) — 上游 0.10.2 本地保真度补丁记录（已并入本 fork）。
 
 归档时已删除本机绝对路径和会话文件名；这里不包含会话正文。
