@@ -2,7 +2,7 @@
 
 All notable changes to `pi-vcc-codemode` are documented in this file.
 
-## [Unreleased]
+## [0.1.3] - 2026-10-28
 
 ### Added
 
@@ -22,6 +22,11 @@ All notable changes to `pi-vcc-codemode` are documented in this file.
 
 - **No argument-spread reductions in the allocator.** `Math.min(...candidates)` throws `Maximum call stack size exceeded` once a host reaches its argument limit (V8 rejects around 130k), which a very long branch could hit. The cheapest-cost scan, the tool omission order and both omission-marker ranges now use loops; `tests/spread-min-guard.test.ts` pins that the allocator and marker modules contain no `Math.min(...`/`Math.max(...`.
 - **Some mid-size codemode sessions could get an empty brief.** The character-budget retry could stall on narrow budget bands, returning `budget-too-small` even though the minimum readable selection fit. The retry now accumulates overshoot against the current body budget; a real-session audit of 15 codemode sessions returned 0 over-budget, 0 note violations and a median ratio of 0.98 after the fix.
+
+### Known issues
+
+- **The compaction metadata can list body text as a section.** `details.sections` is collected with `/^\[(.+?)\]/gm` over the whole summary (`src/hooks/before-compact.ts:862`, `:870`), so lines that start with `[user]`, `[assistant]` or `[omitted ...]` are recorded as section names. The field has no reader and no test; see `docs/reviews/CODEMODE_0.1.3_USER_PERSPECTIVE_REVIEW.md` (D1). Behavior is unchanged from 0.1.2.
+- **A message with no text can render as a bare reference.** An assistant message whose text block is empty produces a line that is only ` (#N)` in the brief (`src/core/brief.ts:749-752`). Cosmetic, no data loss; see the same review (D3).
 
 ## [0.1.2] - 2026-10-26
 

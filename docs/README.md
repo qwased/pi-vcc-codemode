@@ -9,11 +9,14 @@
 - [plans/CODEMODE_0.1.3_FINAL_REVIEW.md](plans/CODEMODE_0.1.3_FINAL_REVIEW.md) — 最终审阅与决策记录：逐条裁定前序评审并定下实施基线。
 - [plans/CODEMODE_0.1.3_EXECUTION_PLAN.md](plans/CODEMODE_0.1.3_EXECUTION_PLAN.md) — 0.1.3 执行计划：可交接的实施项、验收方式、预算与源码基线，当前实施依据。
 - [plans/暂时不做，仅留档.md](plans/暂时不做，仅留档.md) — 早期 Current Task 连续性方案草稿，本版不实施，仅留档。
+- [plans/PERF_FIX_ALLOCATOR_AND_TEST_PROBES.md](plans/PERF_FIX_ALLOCATOR_AND_TEST_PROBES.md) — 0.1.3 分配器性能修复与测试探针清理计划（外部复核后的 v2）。
+- [plans/PERF_FIX_ALLOCATOR_AND_TEST_PROBES_REVIEW.md](plans/PERF_FIX_ALLOCATOR_AND_TEST_PROBES_REVIEW.md) — 对该计划的外部复核：属实项、判断修正与被漏掉的展开点。
 - [reviews/CODEMODE_REVIEW_AND_FIX_PLAN.md](reviews/CODEMODE_REVIEW_AND_FIX_PLAN.md) — 2026-10-26 外部复核、结论核实与修正计划。
 - [reviews/PI-VCC-CODEMODE-EVALUATION-REPORT.md](reviews/PI-VCC-CODEMODE-EVALUATION-REPORT.md) — 0.1.1 真实工作测试与行为核对报告。
 - [reviews/pi-vcc-codemode-long-horizon-review.md](reviews/pi-vcc-codemode-long-horizon-review.md) — 长程任务可寻回性、工作记录与目标保持审阅。
 - [reviews/CODEMODE_0.1.2_DISCUSSION_RECORD.md](reviews/CODEMODE_0.1.2_DISCUSSION_RECORD.md) — 0.1.2 讨论记录：预算上限、第 N 次压缩可见性缺口、中文提取与截断边界。
 - [reviews/CODEMODE_0.1.2_FIELD_NOTES.md](reviews/CODEMODE_0.1.2_FIELD_NOTES.md) — 0.1.2 现场札记：一次真实压缩的汇总数字、A/C/D/E/F 的验证结果与缺口建议。
+- [reviews/CODEMODE_0.1.3_USER_PERSPECTIVE_REVIEW.md](reviews/CODEMODE_0.1.3_USER_PERSPECTIVE_REVIEW.md) — 0.1.3 真实使用视角：A/B 等价性、召回体验与 5 个用户可见缺陷。
 - [patches/pi-vcc-codemode-patch.md](patches/pi-vcc-codemode-patch.md) — 上游 0.10.2 本地保真度补丁记录（已并入本 fork）。
 
 归档时已删除本机绝对路径和会话文件名；这里不包含会话正文。
