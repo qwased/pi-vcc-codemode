@@ -4,6 +4,22 @@ All notable changes to `pi-vcc-codemode` are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Full saved-text scan** — `vcc_recall({ query, scan: true })` (or `/pi-vcc-recall scan:true <query>`) matches the complete saved field view of each message literally and case-insensitively: every tool argument, deep object/array value, nested-call argument and tool result, independent of compaction. It returns up to 20 messages per page with a versioned cursor, continues from a fixed file bound, reports malformed records as incomplete coverage, and does not stop at the default query's 50-hit cap. The default scope stays `lineage`; use `scope:'all'` for the whole session.
+- **Paged reading of one record** — `vcc_recall({ read: { index, offset, length } })` (or `/pi-vcc-recall read:N offset:N length:N`) returns the same canonical field view in grapheme-safe windows (default 4000 units, maximum 12000), with `actualStart`/`actualEnd`/`total`/`remaining` and a copyable next call. Verified `toolCallId`-paired results are named; the recall tool's own arguments/results return an empty view to prevent self-echo.
+
+### Changed
+
+- **`expand` is documented as a preview** — long scripts and nested arguments stay clipped; `scan`/`read` are the complete-field access path. The default query keeps its existing relevance search, snippet limits and 2000-unit tool-argument/nested index; those limits are now stated in the tool description.
+- **Codemode briefs are now historical navigation, built from effective history.** Each compaction rebuilds the body from the current branch (context edits applied) instead of only rolling the previous brief's tail. A single note says the text is past statements, not current state or proof of success; `#N` points at the saved original. User, assistant and tool lines get independent character budgets (initially 40/30/30), long text keeps a head and tail with an exact omission marker, and only when minimum excerpts do not fit is the oldest continuous range folded. Fixed 16-user/80-block caps and the old 8-line/1,000-character codemode re-cut no longer apply. The brief line is `* codemode intent: ...` or `code: ...`; declared tool names are no longer repeated, `// blocked:` is never rendered, and observed errors only add `{error observed; result #R}`. The single reading note now also says `[Session Goal]` is a condensed excerpt and points to the saved original for constraints.
+- **Long sessions reach the effective brief budget ceiling earlier.** `historyBlockCount` now counts the whole effective history, not just the current window, so repeated compaction reaches the 2,000-token ceiling sooner. The 1,100–2,000-token estimate is converted to UTF-16 units and remains a total ceiling; this is a deliberate increase in effective budget for long sessions, not a new setting.
+- **Non-codemode sessions keep the upstream brief.** The 8-tool-line/120-line path, direct tool kept set, default query return text and cut selection are unchanged; the new brief is only used when effective history contains codemode records or the raw window had them before edits.
+
+### Fixed
+
+- **Some mid-size codemode sessions could get an empty brief.** The character-budget retry could stall on narrow budget bands, returning `budget-too-small` even though the minimum readable selection fit. The retry now accumulates overshoot against the current body budget; a real-session audit of 15 codemode sessions returned 0 over-budget, 0 note violations and a median ratio of 0.98 after the fix.
+
 ## [0.1.2] - 2026-10-26
 
 ### Changed
