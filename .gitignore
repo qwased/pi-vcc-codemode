@@ -7,3 +7,4 @@ run_compare.ts
 research/
 benchmarks/out/
 demo.cast
+*.bak

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { buildCompactReport } from "../src/core/report";
+import { buildCompactReport } from "./support/report";
 import {
   userMsg,
   assistantText,

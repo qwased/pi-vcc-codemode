@@ -1,11 +1,11 @@
 import type { Message } from "@earendil-works/pi-ai";
-import { buildSections } from "./build-sections";
-import { clip } from "./content";
-import { normalize } from "./normalize";
-import { renderMessage } from "./render-entries";
-import { searchEntries } from "./search-entries";
-import { type CompileInput, compile } from "./summarize";
-import { estimateTokensFromChars } from "./token-estimate";
+import { buildSections } from "../../src/core/build-sections";
+import { clip } from "../../src/core/content";
+import { normalize } from "../../src/core/normalize";
+import { renderMessage } from "../../src/core/render-entries";
+import { searchEntries } from "../../src/core/search-entries";
+import { type CompileInput, compile } from "../../src/core/summarize";
+import { estimateTokensFromChars } from "../../src/core/token-estimate";
 
 const SECTION_HEADERS = ["Session Goal", "Files And Changes", "Commits", "Outstanding Context"];
 

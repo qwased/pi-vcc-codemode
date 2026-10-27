@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { basename } from "node:path";
-import { buildCompactReport } from "../src/core/report";
+import { buildCompactReport } from "../tests/support/report";
 import { prepareSessionSamples } from "../tests/support/real-sessions";
 import { loadSessionMessages } from "../tests/support/load-session";
 

@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { buildCompactReport } from "../src/core/report";
+import { buildCompactReport } from "./support/report";
 import { prepareSessionSamples, readSourceStat, type SessionSample } from "./support/real-sessions";
 import { loadSessionMessages } from "./support/load-session";
 
