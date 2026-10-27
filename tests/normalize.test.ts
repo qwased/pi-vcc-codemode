@@ -33,19 +33,38 @@ describe("normalize", () => {
     expect(blocks).toEqual([{ kind: "assistant", text: "result", sourceIndex: 0 }]);
   });
 
-  it("normalizes tool call", () => {
+  it("normalizes tool call with its association id", () => {
     const blocks = normalize([assistantWithToolCall("Read", { path: "a.ts" })]);
     expect(blocks).toEqual([{
-      kind: "tool_call", name: "Read", args: { path: "a.ts" }, sourceIndex: 0,
+      kind: "tool_call", name: "Read", args: { path: "a.ts" }, toolCallId: "tc_1", sourceIndex: 0,
     }]);
   });
 
-  it("normalizes tool result", () => {
+  it("normalizes tool result with association and result-status fields", () => {
     const blocks = normalize([toolResult("Read", "file contents")]);
     expect(blocks).toEqual([{
       kind: "tool_result", name: "Read",
-      text: "file contents", sourceIndex: 0,
+      text: "file contents", toolCallId: "tc_1", isError: false, sourceIndex: 0,
     }]);
+  });
+
+  it("keeps nested codemode metadata on the result block", () => {
+    const msg = {
+      role: "toolResult", toolCallId: "c1", toolName: "codemode",
+      content: [{ type: "text", text: "ok" }], isError: false,
+      nestedCalls: { calls: [{ id: "c1/1", name: "read", arguments: { path: "a.ts" }, status: "ok" }], complete: true },
+      timestamp: 0,
+    } as any;
+    const [block] = normalize([msg]);
+    expect(block).toMatchObject({
+      kind: "tool_result",
+      toolCallId: "c1",
+      isError: false,
+      nestedCalls: { complete: true },
+    });
+    if (block.kind === "tool_result") {
+      expect(block.nestedCalls?.calls[0].name).toBe("read");
+    }
   });
 
   it("handles mixed message sequence", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseDeclaredIntent } from "../src/codemode/intent";
+import { parseDeclaredIntent, parseScriptHints } from "../src/codemode/intent";
 
 describe("parseDeclaredIntent", () => {
   test("reads // goal: from the first line when there are no options", () => {
@@ -17,8 +17,16 @@ describe("parseDeclaredIntent", () => {
     expect(parseDeclaredIntent(code)).toBeNull();
   });
 
-  test("does not accept a goal behind an unrelated first line", () => {
-    expect(parseDeclaredIntent("// note\n// goal: hidden")).toBeNull();
+  test("reads a goal from the opening three comment lines", () => {
+    expect(parseDeclaredIntent("// note\n// goal: hidden")).toBe("hidden");
+    expect(parseDeclaredIntent("// note\n// other\n// goal: third line")).toBe("third line");
+    expect(parseDeclaredIntent('// @options: {}\n// note\n// goal: after options')).toBe("after options");
+  });
+
+  test("stops at the first non-empty non-comment line", () => {
+    expect(parseDeclaredIntent("// note\nconst x = 1;\n// goal: too late")).toBeNull();
+    expect(parseDeclaredIntent("// note\n\n// goal: still header")).toBe("still header");
+    expect(parseDeclaredIntent("// one\n// two\n// three\n// goal: fourth")).toBeNull();
   });
 
   test("tolerates goal case and whitespace around the marker", () => {
@@ -48,5 +56,32 @@ describe("parseDeclaredIntent", () => {
 
   test("a goal inside the body is not a declaration", () => {
     expect(parseDeclaredIntent("const x = 1;\n// goal: body comment")).toBeNull();
+  });
+});
+
+describe("parseScriptHints", () => {
+  test("parses goal and blocked together, case-insensitively", () => {
+    expect(parseScriptHints("// GOAL: check cache\n// Blocked : waiting on db\ntext('ok');")).toEqual({
+      hint: { goal: "check cache", blocked: "waiting on db" },
+      rejected: { goal: 0, blocked: 0 },
+    });
+  });
+
+  test("only the first compliant value of each kind is kept", () => {
+    const parsed = parseScriptHints("// goal: first\n// goal: second\n// blocked: a");
+    expect(parsed.hint).toEqual({ goal: "first", blocked: "a" });
+  });
+
+  test("rejects empty and overlong values with counts", () => {
+    const long = "x".repeat(201);
+    const parsed = parseScriptHints(`// goal:\n// goal: ${long}\n// blocked: ${long}`);
+    expect(parsed.hint).toEqual({});
+    expect(parsed.rejected).toEqual({ goal: 2, blocked: 1 });
+  });
+
+  test("ignores unknown markers and markers outside the header region", () => {
+    const parsed = parseScriptHints("// next: do more\nconst x = 1;\n// blocked: body");
+    expect(parsed.hint).toEqual({});
+    expect(parsed.rejected).toEqual({ goal: 0, blocked: 0 });
   });
 });

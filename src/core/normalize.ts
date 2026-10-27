@@ -30,6 +30,9 @@ const normalizeOne = (msg: SessionMessageEntry["message"], msgIndex: number | un
       kind: "tool_result",
       name: msg.toolName,
       text: sanitize(textOf(msg.content)),
+      ...(typeof msg.toolCallId === "string" ? { toolCallId: msg.toolCallId } : {}),
+      ...(msg.nestedCalls ? { nestedCalls: msg.nestedCalls } : {}),
+      ...(typeof msg.isError === "boolean" ? { isError: msg.isError } : {}),
       sourceIndex: msgIndex,
     }];
   }
@@ -49,6 +52,7 @@ const normalizeOne = (msg: SessionMessageEntry["message"], msgIndex: number | un
           kind: "tool_call",
           name: part.name,
           args: part.arguments,
+          ...(typeof part.id === "string" ? { toolCallId: part.id } : {}),
           sourceIndex: msgIndex,
         });
       }

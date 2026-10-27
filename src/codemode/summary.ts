@@ -2,6 +2,7 @@ import type { Message, NestedToolCalls } from "@earendil-works/pi-ai";
 import { clip } from "../core/content";
 import { extractPath, summarizeToolArgs } from "../core/tool-args";
 import { parseDeclaredIntent } from "./intent";
+import type { ActivityClass, ActivityEvidence } from "../types";
 
 const CODE_KEYS = ["code", "script", "source"] as const;
 
@@ -145,6 +146,41 @@ const NESTED_ARG_CHARS_FULL = 200;
 /** Collapse a multi-line command or script body into one physical line. */
 const flattenLine = (text: string): string =>
   text.replace(/\s*\n\s*/g, " ").replace(/\s{2,}/g, " ").trim();
+
+const MUTATION_TOOL_RE = /^(?:write|edit|multiedit|quick_edit|target_edit|apply_patch)$/i;
+const READONLY_TOOL_RE = /^(?:read|glob|grep|ls|find|semantic_query|semantic_grep|semantic_show)$/i;
+
+/** Tool-name class only; a write name is a potential mutation, not success. */
+export const activityClassForToolName = (name: string): ActivityClass => {
+  if (MUTATION_TOOL_RE.test(name)) return "mutation";
+  if (READONLY_TOOL_RE.test(name)) return "readonly";
+  return "unknown";
+};
+
+/**
+ * What a codemode result's nested calls show: a recorded write is a potential
+ * mutation even when the record is incomplete; readonly requires a complete
+ * record whose every call is a known read tool. Missing records, bash-only
+ * scripts and unknown tools stay unknown. Errors are observed facts, not
+ * evidence that the operation is still unresolved.
+ */
+export const classifyNestedActivity = (
+  nested: NestedToolCalls | undefined,
+  isError = false,
+): ActivityEvidence => {
+  const calls = nested?.calls ?? [];
+  const incomplete = !nested || nested.complete === false;
+  const observedError = Boolean(isError) ||
+    calls.some((call) => call.status === "error" || Boolean(call.error));
+
+  if (calls.some((call) => MUTATION_TOOL_RE.test(call.name ?? ""))) {
+    return { category: "mutation", observedError, incomplete };
+  }
+  if (calls.length > 0 && !incomplete && calls.every((call) => READONLY_TOOL_RE.test(call.name ?? ""))) {
+    return { category: "readonly", observedError, incomplete };
+  }
+  return { category: "unknown", observedError, incomplete };
+};
 
 /**
  * One line for the nested calls a tool made while it ran (ctx.executeTool,

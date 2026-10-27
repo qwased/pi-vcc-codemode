@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildBriefSections, stringifyBrief, CODEMODE_SEGMENT_CHARS, type BriefBuildOptions } from "../src/core/brief";
 import { normalize } from "../src/core/normalize";
+import { activityClassForToolName, classifyNestedActivity } from "../src/codemode/summary";
 import type { NormalizedBlock } from "../src/types";
 import { assistantWithToolCall, userMsg } from "./fixtures";
 import { codemodeCall, codemodeResult, codemodeScript, nestedCall } from "./codemode-fixtures";
@@ -155,5 +156,54 @@ describe("codemode segment quota", () => {
     expect(brief).not.toContain("tool-call entries omitted");
     expect(brief).toContain("step 0");
     expect(brief).toContain("step 16");
+  });
+});
+
+describe("activity classification", () => {
+  test("a recorded write is a potential mutation even when the record is incomplete", () => {
+    const evidence = classifyNestedActivity({
+      complete: false,
+      calls: [nestedCall({ name: "write", status: "ok" }), nestedCall({ name: "bash", status: "unfinished" })],
+    });
+    expect(evidence.category).toBe("mutation");
+    expect(evidence.incomplete).toBe(true);
+  });
+
+  test("readonly requires a complete record of known read tools", () => {
+    const complete = classifyNestedActivity({
+      complete: true,
+      calls: [nestedCall({ name: "read" }), nestedCall({ name: "grep" })],
+    });
+    expect(complete.category).toBe("readonly");
+    const incomplete = classifyNestedActivity({
+      complete: false,
+      calls: [nestedCall({ name: "read" })],
+    });
+    expect(incomplete.category).toBe("unknown");
+    expect(incomplete.incomplete).toBe(true);
+  });
+
+  test("bash-only, unknown tools and missing records stay unknown", () => {
+    expect(classifyNestedActivity({ complete: true, calls: [nestedCall({ name: "bash" })] }).category).toBe("unknown");
+    expect(classifyNestedActivity({ complete: true, calls: [nestedCall({ name: "mystery" })] }).category).toBe("unknown");
+    expect(classifyNestedActivity(undefined).category).toBe("unknown");
+    expect(classifyNestedActivity(undefined).incomplete).toBe(true);
+  });
+
+  test("observes errors without inventing a state", () => {
+    const evidence = classifyNestedActivity({
+      complete: true,
+      calls: [nestedCall({ name: "read" }), nestedCall({ name: "bash", status: "error", error: "exit 1" })],
+    });
+    expect(evidence.category).toBe("unknown"); // bash is not a known read tool
+    expect(evidence.observedError).toBe(true);
+    expect(classifyNestedActivity(undefined, true).observedError).toBe(true);
+  });
+
+  test("classifies direct tool names for potential mutation and readonly", () => {
+    expect(activityClassForToolName("edit")).toBe("mutation");
+    expect(activityClassForToolName("apply_patch")).toBe("mutation");
+    expect(activityClassForToolName("read")).toBe("readonly");
+    expect(activityClassForToolName("bash")).toBe("unknown");
   });
 });

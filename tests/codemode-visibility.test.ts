@@ -229,11 +229,11 @@ describe("codemode in the compact brief", () => {
       .toBe("* codemode code: const x = 1; (#0)");
   });
 
-  test("an invalid or misplaced marker falls back to the code head", () => {
+  test("a marker after the header region falls back to the code head", () => {
     const brief = briefOf([
-      codemodeCall("// note\n// goal: not on an accepted line\nawait tools.read({});"),
+      codemodeCall("const x = 1;\n// goal: too late\nawait tools.read({});"),
     ]);
-    expect(brief).toMatch(/^\* codemode -> read \| code: \/\/ note \/\/ goal:/);
+    expect(brief).toMatch(/^\* codemode -> read \| code: const x = 1; \/\/ goal:/);
     expect(brief).not.toContain("* codemode goal:");
   });
 
@@ -245,10 +245,16 @@ describe("codemode in the compact brief", () => {
     expect(brief).toContain("-> a, b, c, d, e, f +1 more | code:");
   });
 
-  test("a very long intent is bounded instead of dominating the brief", () => {
-    const brief = briefOf([codemodeCall(codemodeScript("x".repeat(300), "text('ok');", false))]);
-    expect(brief).toContain(`goal: ${"x".repeat(199)}…`);
-    expect(brief).not.toContain("x".repeat(200));
+  test("an over-200-unit intent is rejected while a 200-unit one is kept", () => {
+    const accepted = briefOf([codemodeCall(codemodeScript("x".repeat(200), "text('ok');", false))]);
+    expect(accepted).toContain(`goal: ${"x".repeat(200)}`);
+    expect(accepted).not.toContain(`goal: ${"x".repeat(200)}…`);
+
+    const rejected = briefOf([codemodeCall(codemodeScript("x".repeat(201), "text('ok');", false))]);
+    expect(rejected).toContain("* codemode code:");
+    // The code preview legitimately quotes the rejected marker, but it must
+    // not be rendered as an accepted intent.
+    expect(rejected).not.toContain("* codemode goal:");
   });
 });
 
