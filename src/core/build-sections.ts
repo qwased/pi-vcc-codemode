@@ -11,6 +11,12 @@ import { buildBriefSections, stringifyBrief } from "./brief";
 export interface BuildSectionsInput {
   blocks: NormalizedBlock[];
   briefBlocks?: NormalizedBlock[];
+  /** S3-rendered body; when set it replaces the brief transcript and is not capped again. */
+  briefText?: string;
+  /** Static header source; effective history when edits exist, otherwise blocks. */
+  headerBlocks?: NormalizedBlock[];
+  /** Outstanding Context source; defaults to blocks. */
+  outstandingBlocks?: NormalizedBlock[];
   /** Hook-provided file activity; authoritative for files touched before this compaction. */
   fileOps?: FileOps;
   /** Command names to record in a [Tracked Commands] section (see
@@ -63,19 +69,21 @@ const formatFileActivity = (blocks: NormalizedBlock[], fileOps?: FileOps): strin
 
 export const buildSections = (input: BuildSectionsInput): SectionData => {
   const { blocks } = input;
-  const briefSections = buildBriefSections(input.briefBlocks ?? blocks);
-  const sessionGoal = extractGoals(blocks);
+  const headerBlocks = input.headerBlocks ?? blocks;
+  const outstandingBlocks = input.outstandingBlocks ?? blocks;
+  const briefSections = input.briefText !== undefined ? [] : buildBriefSections(input.briefBlocks ?? blocks);
+  const sessionGoal = extractGoals(headerBlocks);
   const userPreferences = dedupPreferencesAgainstGoals(
-    extractPreferences(blocks),
+    extractPreferences(headerBlocks),
     sessionGoal,
   );
   return {
     sessionGoal,
-    outstandingContext: extractOutstandingContext(blocks),
-    filesAndChanges: formatFileActivity(blocks, input.fileOps),
-    commits: formatCommits(extractCommits(blocks)),
+    outstandingContext: extractOutstandingContext(outstandingBlocks),
+    filesAndChanges: formatFileActivity(headerBlocks, input.fileOps),
+    commits: formatCommits(extractCommits(headerBlocks)),
     userPreferences,
-    trackedCommands: formatTrackedCommands(extractTrackedCommands(blocks, input.trackCommands ?? [])),
-    briefTranscript: stringifyBrief(briefSections),
+    trackedCommands: formatTrackedCommands(extractTrackedCommands(headerBlocks, input.trackCommands ?? [])),
+    briefTranscript: input.briefText ?? stringifyBrief(briefSections),
   };
 };

@@ -71,4 +71,31 @@ describe("buildSections", () => {
     const matches = r.briefTranscript.match(/\[assistant\]/g);
     expect(matches?.length).toBe(1);
   });
+
+  it("uses an already-rendered briefText instead of rebuilding or capping it", () => {
+    const blocks: NormalizedBlock[] = [{ kind: "user", text: "fresh" }];
+    const rendered = "[user]\nfresh (#0)\n\n[assistant]\n* Read \"a.ts\" (#1)";
+    const r = buildSections({ blocks, briefText: rendered });
+    expect(r.briefTranscript).toBe(rendered);
+  });
+
+  it("separates headerBlocks and outstandingBlocks from the fresh window", () => {
+    const fresh: NormalizedBlock[] = [
+      { kind: "user", text: "continue the migration", sourceIndex: 10 },
+      { kind: "tool_call", name: "Read", args: { path: "fresh.ts" }, sourceIndex: 11 },
+    ];
+    const history: NormalizedBlock[] = [
+      { kind: "user", text: "original task: migrate billing", sourceIndex: 0 },
+      { kind: "tool_call", name: "Edit", args: { path: "old.ts" }, sourceIndex: 1 },
+    ];
+    const r = buildSections({
+      blocks: fresh,
+      headerBlocks: history,
+      outstandingBlocks: fresh,
+    });
+    expect(r.sessionGoal.join("\n")).toContain("original task");
+    expect(r.filesAndChanges.join("\n")).toContain("old.ts");
+    expect(r.filesAndChanges.join("\n")).not.toContain("fresh.ts");
+    expect(r.outstandingContext.join("\n")).not.toContain("original task");
+  });
 });

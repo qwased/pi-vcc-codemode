@@ -1,9 +1,11 @@
-import type { NormalizedBlock } from "../types";
+import type { NormalizedBlock, ActivityClass, ActivityEvidence, ScriptHint } from "../types";
 import { isCodemodeToolName } from "../codemode/active";
-import { extractCode, summarizeCodemodeBrief } from "../codemode/summary";
+import { classifyNestedActivity, activityClassForToolName, extractCode, condenseCodeTo, summarizeCodemodeBrief } from "../codemode/summary";
+import { parseScriptHints } from "../codemode/intent";
 import { clip } from "./content";
 import { extractPath } from "./tool-args";
 import { collapseSkillText } from "./skill-collapse";
+import { graphemeStartAtOrBefore } from "./recall-full";
 
 const TRUNCATE_USER = 256;
 const SEGMENT_CLOSING_ASSISTANT_HEAD_WORDS = 120;
@@ -487,3 +489,289 @@ export const stringifyBrief = (sections: BriefLine[]): string => {
 /** Convenience: build sections from blocks and stringify to text */
 export const compileBrief = (blocks: NormalizedBlock[]): string =>
   stringifyBrief(buildBriefSections(blocks));
+
+// ── new codemode path: candidates, excerpts and actual-cost rendering ─────
+
+export const BRIEF_MIN_TEXT_CHARS = 64;
+export const BRIEF_TEXT_STEP_CHARS = 64;
+export const BRIEF_INTENT_CHARS = 200;
+export const BRIEF_CODE_CHARS = 80;
+export const BRIEF_SHORT_NAV_CHARS = 80;
+
+export interface BriefToolView {
+  name: string;
+  /** One-line activity navigation: `intent: ...`, `code: ...`, or arg summary. */
+  shortNav: string;
+  normalNav: string;
+  resultIndex?: number;
+  observedError: boolean;
+  activity: ActivityClass;
+}
+
+export interface BriefCandidate {
+  key: string;
+  order: number;
+  role: "user" | "assistant" | "tool";
+  sourceIndex?: number;
+  sourceText: string;
+  score: number;
+  evidence?: ActivityEvidence;
+  /** Tool-only display data. */
+  tool?: BriefToolView;
+  /** Parsed script markers; scoring only — blocked text is never rendered. */
+  hint?: ScriptHint;
+  /** Rejected annotation counts (audit only; no text). */
+  hintRejected?: { goal: number; blocked: number };
+  /** Bash execution blocks render as `$ <compressed command>`. */
+  bash?: boolean;
+}
+
+export interface BriefCandidateOptions {
+  /** Internal ablations only; production defaults are goal 4, blocked 2. */
+  annotationWeights?: { goal?: number; blocked?: number };
+}
+
+/**
+ * One allocator result. `text` is the rendered body (no note, headers or
+ * separator); `usedChars` is that body after `wrapLongLines`; `reservedChars`
+ * is the caller's fixed cost (note, structure, header sections), so
+ * `usedChars + reservedChars <= maxChars` is the release gate.
+ */
+export interface BriefSelection {
+  kind: "ok" | "budget-too-small";
+  text: string;
+  usedChars: number;
+  reservedChars: number;
+  counts: Record<string, number>;
+}
+
+const firstCharsEllipsis = (text: string, max: number): string =>
+  text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`;
+
+const toolNavText = (name: string, args: Record<string, unknown>): string => {
+  const field = TOOL_SUMMARY_FIELDS[name];
+  if (field && typeof args[field] === "string") return `"${args[field] as string}"`;
+  const path = extractPath(args);
+  if (path) return `"${path}"`;
+  if (/^bash$/i.test(name)) {
+    const raw = (args.command ?? args.description ?? "") as string;
+    return `"${compressBash(raw)}"`;
+  }
+  if (typeof args.query === "string") return `"${clip(args.query as string, 60)}"`;
+  return "";
+};
+
+const toolResultOf = (block: NormalizedBlock | undefined): Extract<NormalizedBlock, { kind: "tool_result" }> | undefined =>
+  block?.kind === "tool_result" ? block : undefined;
+
+/** Pair calls with the first following result of the same assistant message. */
+const pairToolResults = (blocks: NormalizedBlock[]): Map<number, NormalizedBlock> => {
+  const paired = new Map<number, NormalizedBlock>();
+  let activeAssistant: number | undefined;
+  let pending = new Map<string, number>();
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (block.kind === "assistant") {
+      if (activeAssistant !== block.sourceIndex) {
+        pending = new Map();
+        activeAssistant = block.sourceIndex;
+      }
+      continue;
+    }
+    if (block.kind === "tool_call") {
+      if (activeAssistant !== block.sourceIndex) {
+        pending = new Map();
+        activeAssistant = block.sourceIndex;
+      }
+      if (block.toolCallId) pending.set(block.toolCallId, i);
+      continue;
+    }
+    if (block.kind === "tool_result" && block.toolCallId && pending.has(block.toolCallId)) {
+      paired.set(pending.get(block.toolCallId)!, block);
+      pending.delete(block.toolCallId);
+    }
+  }
+  return paired;
+};
+
+/**
+ * Turn the effective history into timeline candidates. User/assistant text is
+ * kept raw (after the existing sanitize/noise handling); tools carry their
+ * activity class, pairing and intent. Scores follow §6.3 with capped
+ * annotation credit; blocked text is never copied into the candidate.
+ */
+export const buildBriefCandidates = (
+  blocks: NormalizedBlock[],
+  options: BriefCandidateOptions = {},
+): BriefCandidate[] => {
+  const paired = pairToolResults(blocks);
+  const candidates: BriefCandidate[] = [];
+
+  blocks.forEach((block, order) => {
+    if (block.kind === "user") {
+      const text = collapseSkillText(block.text);
+      if (!text.trim()) return;
+      candidates.push({
+        key: `${order}:user`, order, role: "user",
+        sourceIndex: block.sourceIndex, sourceText: text, score: 0,
+      });
+      return;
+    }
+    if (block.kind === "bash") {
+      const text = compressBash(block.command);
+      if (!text) return;
+      candidates.push({
+        key: `${order}:bash`, order, role: "user",
+        sourceIndex: block.sourceIndex, sourceText: text, score: 0, bash: true,
+      });
+      return;
+    }
+    if (block.kind === "assistant") {
+      if (!block.text) return;
+      candidates.push({
+        key: `${order}:assistant`, order, role: "assistant",
+        sourceIndex: block.sourceIndex, sourceText: block.text, score: 0,
+      });
+      return;
+    }
+    if (block.kind !== "tool_call" || !block.name?.trim()) return;
+
+    const result = toolResultOf(paired.get(order));
+    const codemode = isCodemodeToolName(block.name);
+    const code = codemode ? extractCode(block.args) : null;
+    const parsed = code ? parseScriptHints(code) : undefined;
+    const hint = parsed?.hint;
+    const intent = hint?.goal;
+    const codeNav = code ? condenseCodeTo(code, BRIEF_CODE_CHARS, false) : "";
+    const shortNav = intent
+      ? `intent: ${firstCharsEllipsis(intent, BRIEF_SHORT_NAV_CHARS)}`
+      : code
+        ? `code: ${firstCharsEllipsis(codeNav, BRIEF_CODE_CHARS)}`
+        : toolNavText(block.name, block.args);
+    const normalNav = intent
+      ? `intent: ${firstCharsEllipsis(intent, BRIEF_INTENT_CHARS)}`
+      : code
+        ? `code: ${firstCharsEllipsis(codeNav, BRIEF_CODE_CHARS)}`
+        : shortNav;
+
+    const evidence: ActivityEvidence = codemode
+      ? classifyNestedActivity(result?.nestedCalls, result?.isError)
+      : {
+          category: activityClassForToolName(block.name),
+          observedError: Boolean(result?.isError),
+          incomplete: !result,
+        };
+    if (result?.sourceIndex != null) evidence.resultIndex = result.sourceIndex;
+
+    candidates.push({
+      key: `${order}:tool`, order, role: "tool",
+      sourceIndex: block.sourceIndex, sourceText: normalNav, score: 0,
+      evidence, hint,
+      ...(parsed && (parsed.rejected.goal > 0 || parsed.rejected.blocked > 0) ? { hintRejected: parsed.rejected } : {}),
+      tool: {
+        name: block.name,
+        shortNav,
+        normalNav,
+        resultIndex: evidence.resultIndex,
+        observedError: evidence.observedError,
+        activity: evidence.category,
+      },
+    });
+  });
+
+  const total = candidates.length;
+  const maxOrder = total - 1;
+  const goalWeight = options.annotationWeights?.goal ?? 4;
+  const blockedWeight = options.annotationWeights?.blocked ?? 2;
+
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
+    if (candidate.role !== "tool" || !candidate.tool) continue;
+    const r = maxOrder <= 0 ? 1 : i / maxOrder;
+    const base = candidate.tool.activity === "mutation" ? 30
+      : candidate.tool.activity === "readonly" ? 6
+      : 14;
+    let annotation = 0;
+    if (candidate.hint?.goal) annotation += goalWeight;
+    if (candidate.hint?.blocked && r >= 0.75) annotation += blockedWeight;
+    candidate.score = base + Math.round(12 * r)
+      + (candidate.evidence?.observedError ? 16 : 0)
+      + Math.min(6, annotation);
+  }
+
+  // Consecutive identical activity: keep the most recent copy, penalize the rest.
+  let runKey = "";
+  let run: BriefCandidate[] = [];
+  const flush = () => {
+    for (let i = 0; i < run.length - 1; i++) run[i].score -= 12;
+    run = [];
+  };
+  for (const candidate of candidates) {
+    if (candidate.role !== "tool" || !candidate.tool) continue;
+    const key = `${candidate.tool.name}\u0000${candidate.tool.normalNav}\u0000${candidate.tool.activity}`;
+    if (key !== runKey) {
+      flush();
+      runKey = key;
+    }
+    run.push(candidate);
+  }
+  flush();
+
+  return candidates;
+};
+
+const excerptText = (text: string, keepChars: number, sourceIndex?: number): string => {
+  if (keepChars >= text.length) return text;
+  const headChars = Math.ceil(Math.max(0, keepChars) / 2);
+  const tailChars = Math.floor(Math.max(0, keepChars) / 2);
+  const headEnd = graphemeStartAtOrBefore(text, headChars);
+  const tailStart = graphemeStartAtOrBefore(text, Math.max(headEnd, text.length - tailChars));
+  const omitted = Math.max(0, tailStart - headEnd);
+  const marker = sourceIndex != null
+    ? `[omitted ${omitted} of ${text.length} chars; recall #${sourceIndex}]`
+    : `[omitted ${omitted} of ${text.length} chars; source index unavailable]`;
+  const head = text.slice(0, headEnd).trimEnd();
+  const tail = text.slice(tailStart).trimStart();
+  return head ? `${head}\n${marker}\n${tail}` : `${marker}\n${tail}`;
+};
+
+const attachRef = (text: string, sourceIndex?: number): string => {
+  if (sourceIndex == null) return text;
+  const lines = text.split("\n");
+  lines[0] = `${lines[0]} (#${sourceIndex})`;
+  return lines.join("\n");
+};
+
+/** One user/assistant entry at a body-character budget (head/tail excerpt). */
+export const renderTextCandidate = (candidate: BriefCandidate, keepChars: number): string => {
+  const body = candidate.bash
+    ? `$ ${excerptText(candidate.sourceText, keepChars, candidate.sourceIndex)}`
+    : excerptText(candidate.sourceText, keepChars, candidate.sourceIndex);
+  return attachRef(body, candidate.sourceIndex);
+};
+
+/** One tool line; short and normal differ only in navigation length. */
+export const renderToolCandidate = (candidate: BriefCandidate, version: "short" | "normal" = "normal"): string => {
+  const tool = candidate.tool!;
+  const nav = version === "short" ? tool.shortNav : tool.normalNav;
+  const ref = candidate.sourceIndex != null ? ` (#${candidate.sourceIndex})` : "";
+  const error = tool.observedError
+    ? tool.resultIndex != null
+      ? ` {error observed; result #${tool.resultIndex}}`
+      : " {error observed}"
+    : "";
+  return `* ${tool.name}${nav ? ` ${nav}` : ""}${ref}${error}`;
+};
+
+const searchRange = (candidates: BriefCandidate[]): string => {
+  const refs = candidates.map((c) => c.sourceIndex);
+  if (refs.length === 0 || refs.some((n) => typeof n !== "number")) return "";
+  const nums = refs as number[];
+  return `; scan saved history #${Math.min(...nums)}..#${Math.max(...nums)}`;
+};
+
+export const renderTextOmissionMarker = (role: "user" | "assistant", omitted: BriefCandidate[]): string =>
+  `[${omitted.length} older ${role} ${omitted.length === 1 ? "message" : "messages"} omitted${searchRange(omitted)}]`;
+
+export const renderToolOmissionMarker = (omitted: BriefCandidate[]): string =>
+  `* (${omitted.length} earlier tool-call entr${omitted.length === 1 ? "y" : "ies"} omitted${searchRange(omitted)})`;

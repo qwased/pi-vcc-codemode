@@ -23,7 +23,16 @@ const isNoiseUserBlock = (text: string): boolean => {
 const cleanUserText = (text: string): string =>
   text.replace(XML_WRAPPER_RE, "").trim();
 
-export const filterNoise = (blocks: NormalizedBlock[]): NormalizedBlock[] => {
+export interface FilterNoiseOptions {
+  /**
+   * Keep the source index on cleaned user blocks. The new codemode brief
+   * requires a `(#N)` on every body line; the legacy path keeps upstream's
+   * ref-less user lines, so this is opt-in.
+   */
+  keepUserSourceIndex?: boolean;
+}
+
+export const filterNoise = (blocks: NormalizedBlock[], options: FilterNoiseOptions = {}): NormalizedBlock[] => {
   const out: NormalizedBlock[] = [];
   for (const b of blocks) {
     if (b.kind === "tool_call" && NOISE_TOOLS.has(b.name)) continue;
@@ -32,7 +41,11 @@ export const filterNoise = (blocks: NormalizedBlock[]): NormalizedBlock[] => {
       if (isNoiseUserBlock(b.text)) continue;
       const cleaned = cleanUserText(b.text);
       if (!cleaned) continue;
-      out.push({ kind: "user", text: cleaned });
+      out.push({
+        kind: "user",
+        text: cleaned,
+        ...(options.keepUserSourceIndex && b.sourceIndex != null ? { sourceIndex: b.sourceIndex } : {}),
+      });
       continue;
     }
     out.push(b);

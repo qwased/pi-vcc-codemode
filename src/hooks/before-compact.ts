@@ -7,6 +7,7 @@ import { join } from "path";
 import { compileRanked } from "../core/summarize";
 import { normalize } from "../core/normalize";
 import { buildGlobalIndexById, loadGlobalIndexById } from "../core/global-indices";
+import { buildBriefHistory, briefHistoryHasCodemode } from "../core/brief-history";
 import { parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-args";
 import { loadSettings, type PiVccSettings } from "../core/settings";
 import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageContentTokens, estimateTokensFromChars } from "../core/token-estimate";
@@ -761,6 +762,37 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const RANKED_BRIEF_BUDGET_TOKENS = 1100;
     const RANKED_BRIEF_CEILING_TOKENS = 2000;
     const RANKED_BRIEF_TOKENS_PER_BLOCK = 15;
+
+    // The new codemode brief rebuilds its candidates from the effective
+    // history (§8): raw current-branch messages before the retained tail,
+    // projected through context edits. Its budget (§7.1) scales with the FULL
+    // history's block count instead of this window's, so long sessions reach
+    // the ceiling sooner — an intentional effective-budget increase, not a
+    // claim that budgets are unchanged.
+    const briefHistory = buildBriefHistory({
+      branchEntries: branchEntries as any[],
+      firstKeptEntryId,
+      skipCustomTypes: settings.skipCustomTypes,
+      globalIndexById,
+    });
+    const briefHistoryBlockCount = normalize(briefHistory.messages as any, briefHistory.sourceIndices).length;
+    const briefBudgetChars = Math.round(
+      Math.min(
+        RANKED_BRIEF_CEILING_TOKENS,
+        Math.max(RANKED_BRIEF_BUDGET_TOKENS, RANKED_BRIEF_TOKENS_PER_BLOCK * briefHistoryBlockCount),
+      ) * tokenEstimate.charsPerToken,
+    );
+    const historyBriefActive = briefHistoryHasCodemode(briefHistory);
+
+    // Edited history: [Files And Changes] must not reuse the host aggregate,
+    // whose entries cannot be proven still effective. Rebuild it from the
+    // effective candidates' own nested records (§8.1).
+    if (historyBriefActive && briefHistory.hasContextEdits) {
+      const historyNested = nestedFileOps(briefHistory.messages as any);
+      readFileOps = [...historyNested.read];
+      modifiedFileOps = [...new Set([...historyNested.written, ...historyNested.edited])];
+    }
+
     const summary = compileRanked({
       messages,
       sourceIndices,
@@ -775,6 +807,8 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         maxBriefCharsCeiling: Math.round(RANKED_BRIEF_CEILING_TOKENS * tokenEstimate.charsPerToken),
         briefCharsPerBlock: Math.round(RANKED_BRIEF_TOKENS_PER_BLOCK * tokenEstimate.charsPerToken),
       },
+      briefHistory,
+      briefBudgetChars,
     });
 
     const branchIds = branchEntries.map((e: any) => e.id);
@@ -814,6 +848,15 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       cutWindow,
       tokensBefore: preparation.tokensBefore,
       tokenEstimate,
+      briefHistory: {
+        active: historyBriefActive,
+        messages: briefHistory.messages.length,
+        blocks: briefHistoryBlockCount,
+        budgetChars: briefBudgetChars,
+        hadCodemodeHistory: briefHistory.hadCodemodeHistory,
+        hasContextEdits: briefHistory.hasContextEdits,
+        limitedReason: briefHistory.limitedReason ?? null,
+      },
       summaryLength: summary.length,
       summaryPreview: summary.slice(0, 500),
       sections: [...summary.matchAll(/^\[(.+?)\]/gm)].map((m) => m[1]),
@@ -826,7 +869,16 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       version: 2,
       sections: [...summary.matchAll(/^\[(.+?)\]/gm)].map((m) => m[1]),
       sourceMessageCount: agentMessages.length,
-      previousSummaryUsed: Boolean(preparation.previousSummary),
+      // Edited history never inherits previous headers, so say so.
+      previousSummaryUsed: historyBriefActive && briefHistory.hasContextEdits
+        ? false
+        : Boolean(preparation.previousSummary),
+      ...(historyBriefActive
+        ? {
+            briefHistoryMessageCount: briefHistory.messages.length,
+            ...(briefHistory.limitedReason ? { briefHistoryLimited: briefHistory.limitedReason } : {}),
+          }
+        : {}),
       reason,
       willRetry,
     };

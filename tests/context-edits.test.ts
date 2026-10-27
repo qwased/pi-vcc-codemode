@@ -5,7 +5,10 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { applyTailBudget, buildOwnCut, registerBeforeCompactHook } from "../src/hooks/before-compact";
 import { buildGlobalIndexById } from "../src/core/global-indices";
+import { HISTORICAL_NOTE, LIMITED_HISTORY_NOTE, wrapLongLines } from "../src/core/format";
+import { assistantText, userMsg } from "./fixtures";
 import {
+  codemodeCall,
   codemodeResult,
   codemodeScript,
   codemodeStore,
@@ -38,7 +41,7 @@ describe.skipIf(typeof (piCore as any).buildSessionProjection !== "function")("c
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
   } as any);
 
-  function compact(session: any, keep = 0, reason = "manual") {
+  function compact(session: any, keep = 0, reason = "manual", previousSummary?: string) {
     let handler: any;
     registerBeforeCompactHook({ on(name: string, fn: any) {
       if (name === "session_before_compact") handler = fn;
@@ -48,7 +51,7 @@ describe.skipIf(typeof (piCore as any).buildSessionProjection !== "function")("c
       type: "session_before_compact", branchEntries: entries,
       customInstructions: `__pi_vcc__ keep:${keep}`, reason, willRetry: reason === "overflow",
       preparation: { tokensBefore: 1000, fileOps: { read: [], written: [], edited: [] },
-        previousSummary: entries.filter((e: any) => e.type === "compaction").at(-1)?.summary },
+        previousSummary: previousSummary ?? entries.filter((e: any) => e.type === "compaction").at(-1)?.summary },
       signal: new AbortController().signal,
     }, { sessionManager: session, ui: { notify() {} } })?.compaction;
   }
@@ -114,7 +117,7 @@ describe.skipIf(typeof (piCore as any).buildSessionProjection !== "function")("c
     expect(second.summary).toContain("New retained fact.");
   });
 
-  test("codemode-store entries stay out of #N and a previous summary survives a context-edited replay", () => {
+  test("codemode-store entries stay out of #N and a context-edited replay rebuilds history without old headers", () => {
     const session = piCore.SessionManager.inMemory(dir) as any;
     const user = (text: string) => ({
       role: "user",
@@ -173,7 +176,10 @@ describe.skipIf(typeof (piCore as any).buildSessionProjection !== "function")("c
 
     const second = compact(session, 1);
     expect(second).toBeDefined();
-    expect(second.details.previousSummaryUsed).toBe(true);
+    // Edits make the old header inheritance unsafe; the raw history is the
+    // only rebuilt source (§8.1), so the previous summary is not reused.
+    expect(second.details.previousSummaryUsed).toBe(false);
+    expect(second.details.briefHistoryMessageCount).toBeGreaterThan(0);
     expect(second.details.sourceMessageCount).toBeGreaterThan(0);
     expect(second.firstKeptEntryId).toBeTruthy();
     expect(second.summary).toContain("First retained fact.");
@@ -248,5 +254,126 @@ describe.skipIf(typeof (piCore as any).buildSessionProjection !== "function")("c
     expect(result.firstKeptEntryId).toBe(safeBoundary);
     expect(JSON.stringify(result.messages)).toContain("small replacement");
     expect(JSON.stringify(result.messages)).not.toContain("x".repeat(1000));
+  });
+
+  // ── new codemode brief over edited history (S4) ──────────────────────────
+
+  test("T15: a replacement enters the rebuilt brief with the saved original #N", () => {
+    const session = piCore.SessionManager.inMemory(dir) as any;
+    session.appendMessage(userMsg("Inspect authentication"));
+    const response = session.appendMessage(assistant("ORIGINAL_RESPONSE"));
+    session.appendMessage(codemodeCall(codemodeScript("read auth", "await tools.read({ path: 'src/auth.ts' });")) as any);
+    session.appendMessage(codemodeResult({ calls: [nestedCall({ name: "read", arguments: { path: "src/auth.ts" } })] }) as any);
+    session.appendContextEdit(response, { content: "Current replacement response." });
+    session.appendMessage(userMsg("Continue the real task"));
+    session.appendMessage(assistantText("Kept fact."));
+
+    const result = compact(session, 1);
+    expect(result.summary).toContain("Current replacement response. (#1)");
+    expect(result.summary).not.toContain("ORIGINAL_RESPONSE");
+    expect(result.summary).toContain(wrapLongLines(HISTORICAL_NOTE));
+    expect(result.details.previousSummaryUsed).toBe(false);
+  });
+
+  test("T16: an edited checkpoint limits history and says so", () => {
+    // The in-memory API refuses to edit a compaction entry, so the branch is a
+    // synthetic path: a context_edit targeting a checkpoint is still a shape a
+    // saved session can hold, and the new brief must degrade conservatively.
+    let parentId: string | undefined;
+    const link = (items: any[]) =>
+      items.map((item) => {
+        const out = { ...item, parentId };
+        parentId = item.id;
+        return out;
+      });
+    const branch = link([
+      { id: "u1", type: "message", message: userMsg("BEFORE_CHECKPOINT_TASK") },
+      { id: "a1", type: "message", message: assistant("Before checkpoint work.") },
+      {
+        id: "comp",
+        type: "compaction",
+        summary: "[Session Goal]\n- BEFORE_CHECKPOINT_TASK",
+        firstKeptEntryId: "",
+        tokensBefore: 1000,
+      },
+      { id: "u2", type: "message", message: userMsg("AFTER_CHECKPOINT_TASK") },
+      { id: "c2", type: "message", message: codemodeCall(codemodeScript("after write", "await tools.write({ path: 'src/after.ts', content: 'x' });")) },
+      { id: "r2", type: "message", message: codemodeResult({ calls: [nestedCall({ name: "write", arguments: { path: "src/after.ts" } })] }) },
+      { id: "a2", type: "message", message: assistant("After checkpoint work.") },
+      { id: "e1", type: "context_edit", targetId: "comp", replacement: null },
+    ]);
+
+    let handler: any;
+    registerBeforeCompactHook({ on(name: string, fn: any) {
+      if (name === "session_before_compact") handler = fn;
+    } } as any);
+    const result = handler({
+      type: "session_before_compact",
+      branchEntries: branch,
+      customInstructions: "__pi_vcc__ keep:0",
+      reason: "manual",
+      willRetry: false,
+      preparation: {
+        tokensBefore: 1000,
+        fileOps: { read: [], written: [], edited: [] },
+        previousSummary: "[Session Goal]\n- BEFORE_CHECKPOINT_TASK",
+      },
+      signal: new AbortController().signal,
+    }, { sessionManager: { getEntries: () => branch }, ui: { notify() {} } })?.compaction;
+
+    expect(result.details.briefHistoryLimited).toBe("edited-checkpoint");
+    expect(result.details.previousSummaryUsed).toBe(false);
+    expect(result.details.briefHistoryMessageCount).toBe(4);
+    expect(result.summary).toContain(wrapLongLines(`${HISTORICAL_NOTE}\n${LIMITED_HISTORY_NOTE}`));
+    expect(result.summary).toContain("AFTER_CHECKPOINT_TASK (#2)");
+    expect(result.summary).toContain("intent: after write (#3)");
+    expect(result.summary).not.toContain("BEFORE_CHECKPOINT_TASK");
+    // Files come from the effective history, never from the edited prefix.
+    expect(result.summary).toContain("src/after.ts");
+    expect(result.summary).not.toContain("Before checkpoint work.");
+  });
+
+  test("T26: codemode removed by edits never falls back to the old merge", () => {
+    const session = piCore.SessionManager.inMemory(dir) as any;
+    session.appendMessage(userMsg("Investigate authentication"));
+    const call = session.appendMessage(codemodeCall(codemodeScript("read auth", "await tools.read({ path: 'src/auth.ts' });")) as any);
+    const resultEntry = session.appendMessage(codemodeResult({ calls: [nestedCall({ name: "read", arguments: { path: "src/auth.ts" } })] }) as any);
+    session.appendMessage(assistant("Auth read."));
+    session.appendMessage(userMsg("Latest task"));
+    session.appendMessage(assistant("Latest answer."));
+    session.appendContextEdit(call, null);
+    session.appendContextEdit(resultEntry, null);
+
+    const previousSummary = [
+      "[Files And Changes]",
+      "- Modified: src/auth.ts",
+      "",
+      "---",
+      "",
+      "[user]",
+      "OLD_BRIEF_MARKER",
+    ].join("\n");
+    const result = compact(session, 1, "manual", previousSummary);
+    expect(result.summary).toContain(wrapLongLines(HISTORICAL_NOTE));
+    expect(result.summary).toContain("Investigate authentication (#0)");
+    expect(result.summary).toContain("Auth read. (#3)");
+    expect(result.summary).not.toContain("OLD_BRIEF_MARKER");
+    expect(result.summary).not.toContain("src/auth.ts");
+    expect(result.summary).not.toMatch(/^\* codemode/m);
+    expect(result.details.previousSummaryUsed).toBe(false);
+  });
+
+  test("T24: no user anchor compacts all and rebuilds the whole history", () => {
+    const session = piCore.SessionManager.inMemory(dir) as any;
+    session.appendMessage(assistant("FIRST_ASSISTANT_FACT"));
+    session.appendMessage(codemodeCall(codemodeScript("inspect", "await tools.read({ path: 'src/a.ts' });")) as any);
+    session.appendMessage(codemodeResult({ calls: [nestedCall({ name: "read", arguments: { path: "src/a.ts" } })] }) as any);
+    session.appendMessage(assistant("LATEST_ASSISTANT_FACT"));
+
+    const result = compact(session);
+    expect(result.firstKeptEntryId).toBe("");
+    expect(result.summary).toContain("FIRST_ASSISTANT_FACT (#0)");
+    expect(result.summary).toContain("LATEST_ASSISTANT_FACT (#3)");
+    expect(result.summary).toContain("intent: inspect");
   });
 });

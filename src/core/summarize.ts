@@ -3,9 +3,24 @@ import type { FileOps } from "../types";
 import { normalize } from "./normalize";
 import { filterNoise } from "./filter-noise";
 import { buildSections } from "./build-sections";
-import { formatSummary, capBrief, capItems, stripCapMarker, BRIEF_MAX_LINES, RECALL_NOTE, wrapLongLines } from "./format";
+import {
+  formatSummary,
+  formatHeaderSections,
+  capBrief,
+  capItems,
+  stripCapMarker,
+  trimHeaderToBudget,
+  BRIEF_MAX_LINES,
+  RECALL_NOTE,
+  HISTORICAL_NOTE,
+  LEGACY_HISTORICAL_NOTE,
+  LIMITED_HISTORY_NOTE,
+  wrapLongLines,
+} from "./format";
 import { COMMAND_SEPARATOR, COMMANDS_PER_NAME } from "../extract/tracked-commands";
-import { selectRankedBriefBlocks, type BriefRankingOptions } from "./rank";
+import { selectRankedBriefBlocks, allocateBriefBudget, type BriefRankingOptions } from "./rank";
+import { buildBriefCandidates, type BriefCandidateOptions } from "./brief";
+import { briefHistoryHasCodemode, type BriefHistory } from "./brief-history";
 
 export interface CompileInput {
   messages: Message[];
@@ -25,6 +40,48 @@ export interface CompileInput {
 
 export interface RankedCompileInput extends CompileInput {
   ranking?: BriefRankingOptions;
+  /**
+   * Effective history rebuilt from the current branch (core/brief-history.ts).
+   * When it holds codemode records (now or before edits), the new codemode
+   * brief replaces the previous one instead of merging it.
+   */
+  briefHistory?: BriefHistory;
+  /**
+   * Whole-brief char budget for the new path (§7.1, hook-computed):
+   * round(clamp(15 * historyBlockCount, 1100, 2000) * charsPerToken).
+   * Without it the input keeps the legacy ranked path.
+   */
+  briefBudgetChars?: number;
+  /** Internal ablation seam for the audit; production leaves it unset. */
+  briefCandidateOptions?: BriefCandidateOptions;
+}
+
+export interface HeaderSectionDetail {
+  name: string;
+  /** Non-empty lines of this section in the trimmed header. */
+  lines: number;
+  /** Lines of this section dropped by the 20% header cap. */
+  omitted: number;
+}
+
+/** Same-selection numbers for the audit (§9.3); no message content. */
+export interface BriefPlanDetail {
+  kind: "ok" | "budget-too-small" | "legacy";
+  budgetChars: number;
+  usedChars: number;
+  reservedChars: number;
+  noteChars: number;
+  headerChars: number;
+  headerTruncated: boolean;
+  headerOmittedItems: number;
+  headerSections: HeaderSectionDetail[];
+  limited: boolean;
+  counts: Record<string, number>;
+}
+
+export interface RankedCompileResult {
+  summary: string;
+  detail: BriefPlanDetail;
 }
 
 const HEADER_NAMES = ["Session Goal", "Files And Changes", "Commits", "Tracked Commands", "Outstanding Context", "User Preferences"];
@@ -234,6 +291,19 @@ const mergePrevious = (prev: string, fresh: string, options: { preserveFreshBrie
   return parts.join(SEPARATOR);
 };
 
+/** Header-only variant of mergePrevious for the new codemode path (§8.1). */
+const mergeHeaderParts = (prev: string | undefined, fresh: string): string => {
+  if (!prev) return fresh;
+  return HEADER_NAMES
+    .map((header) => {
+      const freshSec = sectionOf(fresh, header);
+      const prevSec = sectionOf(prev, header).replace(/\n[ \t]+(?=\S)/g, " ");
+      return mergeHeaderSection(header, prevSec, freshSec);
+    })
+    .filter(Boolean)
+    .join("\n\n");
+};
+
 interface CompileWithBriefBlocksOptions {
   briefBlocksFor?: (blocks: ReturnType<typeof normalize>) => ReturnType<typeof normalize>;
   capFreshBrief?: boolean;
@@ -245,21 +315,137 @@ const compileWithBriefBlocks = (input: CompileInput, options: CompileWithBriefBl
   const briefBlocks = options.briefBlocksFor?.(blocks);
   const data = buildSections({ blocks, briefBlocks, fileOps: input.fileOps, trackCommands: input.trackCommands });
   const fresh = formatSummary(data, { capBriefTranscript: options.capFreshBrief ?? true });
-  // Strip any legacy RECALL_NOTE baked into prev summary (pre-fix format)
-  // so merge doesn't re-stack it inside the brief.
+  // Strip the known notes baked into prev summaries (legacy RECALL_NOTE and the
+  // new-path HISTORICAL_NOTE) so merge doesn't re-stack them inside the brief.
   const prev = input.previousSummary
-    ? stripRecallNote(input.previousSummary)
+    ? stripKnownNotes(input.previousSummary)
     : undefined;
   const merged = prev ? mergePrevious(prev, fresh, { preserveFreshBrief: options.preserveFreshBriefOnMerge }) : fresh;
   if (!merged) return "";
   return wrapLongLines(merged + SEPARATOR + RECALL_NOTE);
 };
 
+/**
+ * New codemode path: one brief rebuilt from the effective history, a single
+ * reading note, and headers that are either merged from the previous summary
+ * (no edits) or rebuilt from the effective history (edits, §8.1). The previous
+ * brief transcript is never merged, so no old line can outlive its source.
+ */
+/** Non-empty line counts per `[Section]` in header text. */
+const sectionLineCounts = (text: string): Map<string, number> => {
+  const counts = new Map<string, number>();
+  let current: string | undefined;
+  for (const line of text.split("\n")) {
+    const header = line.match(/^\[(.+?)\]$/)?.[1];
+    if (header) {
+      current = header;
+      if (!counts.has(header)) counts.set(header, 0);
+      continue;
+    }
+    if (!current || !line.trim()) continue;
+    counts.set(current, (counts.get(current) ?? 0) + 1);
+  }
+  return counts;
+};
+
+const compileWithEffectiveHistory = (
+  input: RankedCompileInput,
+  history: BriefHistory,
+  budgetChars: number,
+): RankedCompileResult => {
+  const budget = Math.max(0, Math.floor(budgetChars));
+  const blocks = filterNoise(normalize(input.messages, input.sourceIndices));
+  const historyBlocks = filterNoise(normalize(history.messages as any, history.sourceIndices), {
+    keepUserSourceIndex: true,
+  });
+  const candidates = buildBriefCandidates(historyBlocks, input.briefCandidateOptions);
+
+  // Static headers: this round's new messages plus the existing merge rule
+  // normally; with edits, the effective history is the only trusted source.
+  const data = buildSections({
+    blocks,
+    headerBlocks: history.hasContextEdits ? historyBlocks : blocks,
+    outstandingBlocks: blocks,
+    fileOps: input.fileOps,
+    trackCommands: input.trackCommands,
+    briefText: "",
+  });
+  const freshHeader = formatHeaderSections(data);
+  const headerText = history.hasContextEdits
+    ? freshHeader
+    : mergeHeaderParts(input.previousSummary ? stripKnownNotes(input.previousSummary) : undefined, freshHeader);
+
+  // The note and its separator are fixed costs; the header gets at most 20%
+  // of what remains, and unused quota returns to the body.
+  const limited = history.limitedReason === "edited-checkpoint";
+  const note = wrapLongLines(limited ? `${HISTORICAL_NOTE}\n${LIMITED_HISTORY_NOTE}` : HISTORICAL_NOTE);
+  const headerCap = Math.max(0, Math.floor((budget - note.length - SEPARATOR.length) * 0.2));
+  const trimmedHeader = trimHeaderToBudget(wrapLongLines(headerText), headerCap);
+  const header = trimmedHeader.text;
+
+  const bodySeparator = header && candidates.length > 0 ? SEPARATOR.length : 0;
+  const reservedChars = note.length + SEPARATOR.length + header.length + bodySeparator;
+  const selection = allocateBriefBudget(candidates, { maxChars: budget, reservedChars });
+
+  const before = sectionLineCounts(headerText);
+  const after = sectionLineCounts(header);
+  const headerSections = HEADER_NAMES
+    .filter((name) => (before.get(name) ?? 0) > 0)
+    .map((name) => ({
+      name,
+      lines: after.get(name) ?? 0,
+      omitted: Math.max(0, (before.get(name) ?? 0) - (after.get(name) ?? 0)),
+    }));
+
+  const detail: BriefPlanDetail = {
+    kind: selection.kind,
+    budgetChars: budget,
+    usedChars: selection.usedChars,
+    reservedChars: selection.reservedChars,
+    noteChars: note.length,
+    headerChars: header.length,
+    headerTruncated: trimmedHeader.truncated,
+    headerOmittedItems: trimmedHeader.omittedItems,
+    headerSections,
+    limited,
+    counts: selection.counts,
+  };
+
+  // No fake empty summary: the caller decides what to do with an explicit
+  // "does not fit" result (production budgets cannot reach it).
+  if (selection.kind !== "ok") return { summary: "", detail };
+
+  const parts = [header, selection.text].filter(Boolean);
+  if (parts.length === 0) return { summary: "", detail };
+  return { summary: wrapLongLines(parts.join(SEPARATOR) + SEPARATOR + note), detail };
+};
+
+const legacyDetail = (): BriefPlanDetail => ({
+  kind: "legacy",
+  budgetChars: 0,
+  usedChars: 0,
+  reservedChars: 0,
+  noteChars: 0,
+  headerChars: 0,
+  headerTruncated: false,
+  headerOmittedItems: 0,
+  headerSections: [],
+  limited: false,
+  counts: {},
+});
+
 export const compile = (input: CompileInput): string =>
   compileWithBriefBlocks(input);
 
-export const compileRanked = (input: RankedCompileInput): string =>
-  compileWithBriefBlocks(input, {
+/**
+ * Compile with the same-selection detail the audit reads (§7.4). The summary
+ * is identical to `compileRanked`; only the reporting is additional.
+ */
+export const compileRankedWithDetail = (input: RankedCompileInput): RankedCompileResult => {
+  if (input.briefHistory && input.briefBudgetChars != null && briefHistoryHasCodemode(input.briefHistory)) {
+    return compileWithEffectiveHistory(input, input.briefHistory, input.briefBudgetChars);
+  }
+  const summary = compileWithBriefBlocks(input, {
     briefBlocksFor: (blocks) => selectRankedBriefBlocks(blocks, {
       ...input.ranking,
       fileOps: input.ranking?.fileOps ?? input.fileOps,
@@ -267,23 +453,39 @@ export const compileRanked = (input: RankedCompileInput): string =>
     capFreshBrief: false,
     preserveFreshBriefOnMerge: true,
   });
+  return { summary, detail: legacyDetail() };
+};
+
+export const compileRanked = (input: RankedCompileInput): string =>
+  compileRankedWithDetail(input).summary;
 
 /**
- * RECALL_NOTE as stored: wrapLongLines breaks it across lines (it is longer
- * than the wrap width), so match its words separated by any whitespace,
- * together with the separator in front of it.
+ * A note as stored: wrapLongLines breaks it across lines (it is longer than
+ * the wrap width), so match its words separated by any whitespace, together
+ * with the separator in front of it.
  */
-const RECALL_NOTE_RE = new RegExp(
-  "\\n*(?:---\\n+)?" +
-    RECALL_NOTE.split(/\s+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+") +
-    "\\n*",
-  "g",
-);
+const notePattern = (note: string): RegExp =>
+  new RegExp(
+    "\\n*(?:---\\n+)?" +
+      note.split(/\s+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+") +
+      "\\n*",
+    "g",
+  );
+
+const RECALL_NOTE_RE = notePattern(RECALL_NOTE);
+const HISTORICAL_NOTE_RE = notePattern(HISTORICAL_NOTE);
+const LEGACY_HISTORICAL_NOTE_RE = notePattern(LEGACY_HISTORICAL_NOTE);
 
 /**
- * Remove every RECALL_NOTE from a previous summary before merging. The exact
- * match this replaced never found the wrapped note, so each compaction kept
+ * Remove known notes from a previous summary before merging. The exact match
+ * this replaced never found the wrapped RECALL_NOTE, so each compaction kept
  * the old note inside the brief and stacked one more; this also cleans those.
+ * HISTORICAL_NOTE is stripped too so a new-path summary never re-stacks when
+ * read back by either path.
  */
-const stripRecallNote = (text: string): string =>
-  text.replace(RECALL_NOTE_RE, "\n\n").trimEnd();
+const stripKnownNotes = (text: string): string =>
+  text
+    .replace(HISTORICAL_NOTE_RE, "\n\n")
+    .replace(LEGACY_HISTORICAL_NOTE_RE, "\n\n")
+    .replace(RECALL_NOTE_RE, "\n\n")
+    .trimEnd();

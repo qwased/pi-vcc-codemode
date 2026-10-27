@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { compile, compileRanked } from "../src/core/summarize";
-import { rankBriefBlocks, selectRankedBriefBlocks } from "../src/core/rank";
-import { compileBrief } from "../src/core/brief";
+import { allocateBriefBudget, rankBriefBlocks, selectRankedBriefBlocks } from "../src/core/rank";
+import { buildBriefCandidates, compileBrief } from "../src/core/brief";
+import { buildSections } from "../src/core/build-sections";
+import { formatSummary, HISTORICAL_NOTE, wrapLongLines } from "../src/core/format";
 import type { NormalizedBlock } from "../src/types";
 import { assistantText, assistantWithToolCall, userMsg } from "./fixtures";
 
@@ -264,5 +266,189 @@ describe("section-aware brief ranking prototype", () => {
     );
     expect(ceilOnly.length).toBe(flat.length);
     expect(flat.length).toBeLessThanOrEqual(4400);
+  });
+});
+
+const alloc = (blocks: NormalizedBlock[], maxChars: number, reservedChars = 0) =>
+  allocateBriefBudget(buildBriefCandidates(blocks), { maxChars, reservedChars });
+
+describe("new codemode brief allocation", () => {
+  it("keeps all short user/assistant text in original order within the budget", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "user", text: "u1", sourceIndex: 0 },
+      { kind: "assistant", text: "a1", sourceIndex: 1 },
+      { kind: "user", text: "u2", sourceIndex: 2 },
+      { kind: "assistant", text: "a2", sourceIndex: 3 },
+    ];
+    const selection = alloc(blocks, 2000);
+    expect(selection.kind).toBe("ok");
+    expect(selection.usedChars + selection.reservedChars).toBeLessThanOrEqual(2000);
+    expect(selection.text).toContain("[user]\nu1 (#0)");
+    expect(selection.text).toContain("[assistant]\na1 (#1)");
+    expect(selection.text).toContain("u2 (#2)");
+    expect(selection.text.indexOf("u1 (#0)")).toBeLessThan(selection.text.indexOf("a1 (#1)"));
+    expect(selection.text.indexOf("a1 (#1)")).toBeLessThan(selection.text.indexOf("u2 (#2)"));
+  });
+
+  it("excerpts a long message with head, omitted count and source", () => {
+    const long = `${"x".repeat(500)}TAIL_MARKER`;
+    const selection = alloc([{ kind: "user", text: long, sourceIndex: 4 }], 300);
+    expect(selection.kind).toBe("ok");
+    expect(selection.text).toContain("(#4)");
+    expect(selection.text).toMatch(/\[omitted \d+ of 511 chars; recall #4\]/);
+    expect(selection.text).toContain("TAIL_MARKER");
+    expect(selection.usedChars + selection.reservedChars).toBeLessThanOrEqual(300);
+  });
+
+  it("does not use a fixed count limit when the budget is sufficient (T05)", () => {
+    const blocks: NormalizedBlock[] = [];
+    for (let i = 0; i < 18; i++) {
+      blocks.push({ kind: "user", text: `user ${i}`, sourceIndex: i * 5 });
+      blocks.push({ kind: "assistant", text: `assistant ${i}`, sourceIndex: i * 5 + 1 });
+      for (let j = 0; j < 3; j++) {
+        blocks.push({ kind: "tool_call", name: "Read", args: { path: `f-${i}-${j}.ts` }, sourceIndex: i * 5 + 2 + j });
+      }
+      blocks.push({ kind: "tool_result", name: "Read", text: "body", isError: false, sourceIndex: i * 5 + 4 });
+    }
+    expect(blocks.length).toBeGreaterThan(81);
+    const selection = alloc(blocks, 20000);
+    expect(selection.kind).toBe("ok");
+    for (let i = 0; i < 18; i++) expect(selection.text).toContain(`user ${i} (#${i * 5})`);
+    expect(selection.usedChars + selection.reservedChars).toBeLessThanOrEqual(20000);
+  });
+
+  it("folds the oldest continuous text range when even minimum excerpts do not fit (T06)", () => {
+    const blocks: NormalizedBlock[] = Array.from({ length: 10 }, (_, i) => ({
+      kind: "user" as const, text: `u${i} ` + "x".repeat(500), sourceIndex: i,
+    }));
+    const selection = alloc(blocks, 500);
+    expect(selection.kind).toBe("ok");
+    expect(selection.text).toMatch(/\[\d+ older user messages omitted; scan saved history #\d+..#\d+\]/);
+    expect(selection.text).toContain("u9");
+    expect(selection.text).not.toContain("u0 ");
+    expect(selection.usedChars + selection.reservedChars).toBeLessThanOrEqual(500);
+  });
+
+  it("keeps the observed-error activity under a tight tool budget (T12)", () => {
+    const blocks: NormalizedBlock[] = [];
+    blocks.push({ kind: "tool_call", name: "Read", args: { path: "failed.ts" }, toolCallId: "c0", sourceIndex: 0 });
+    blocks.push({ kind: "tool_result", name: "Read", text: "boom", toolCallId: "c0", isError: true, sourceIndex: 1 });
+    for (let i = 0; i < 5; i++) {
+      blocks.push({ kind: "tool_call", name: "Read", args: { path: `old-${i}.ts` }, toolCallId: `c${i + 1}`, sourceIndex: 2 + i * 2 });
+      blocks.push({ kind: "tool_result", name: "Read", text: "ok", toolCallId: `c${i + 1}`, isError: false, sourceIndex: 3 + i * 2 });
+    }
+    const selection = alloc(blocks, 160);
+    expect(selection.kind).toBe("ok");
+    expect(selection.text).toContain("failed.ts");
+    expect(selection.text).toContain("{error observed; result #1}");
+    expect(selection.counts.toolOmitted).toBeGreaterThan(0);
+    expect(selection.text).toContain("tool-call entries omitted");
+    expect(selection.usedChars + selection.reservedChars).toBeLessThanOrEqual(160);
+  });
+
+  it("preserves the original order of interleaved assistant text and tools (T07)", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "assistant", text: "before", sourceIndex: 0 },
+      { kind: "tool_call", name: "Read", args: { path: "a.ts" }, toolCallId: "c1", sourceIndex: 0 },
+      { kind: "tool_result", name: "Read", text: "ok", toolCallId: "c1", isError: false, sourceIndex: 1 },
+      { kind: "assistant", text: "after", sourceIndex: 2 },
+    ];
+    const selection = alloc(blocks, 2000);
+    expect(selection.text).toContain("[assistant]\nbefore (#0)");
+    expect(selection.text.indexOf("before (#0)")).toBeLessThan(selection.text.indexOf("* Read \"a.ts\" (#0)"));
+    expect(selection.text.indexOf("* Read \"a.ts\" (#0)")).toBeLessThan(selection.text.indexOf("after (#2)"));
+  });
+
+  it("counts reserved note/header cost and keeps wrap idempotent (T13)", () => {
+    expect(HISTORICAL_NOTE).toBe(
+      "Historical navigation, not current state or proof of success. User/assistant text and intent are past statements; " +
+      "tool names describe calls or script structure. This brief follows effective edits; #N refers to saved originals, " +
+      "which may differ. Session Goal is a condensed excerpt; recall the original for constraints. " +
+      "Use vcc_recall: scan searches saved fields; read pages through long records.",
+    );
+    const blocks: NormalizedBlock[] = [
+      { kind: "user", text: "fix the bug", sourceIndex: 0 },
+      { kind: "assistant", text: "looking into it", sourceIndex: 1 },
+    ];
+    const data = buildSections({ blocks, briefText: "" });
+    const headerText = formatSummary({ ...data, briefTranscript: "" }).length;
+    const reserved = headerText + HISTORICAL_NOTE.length + 16;
+    const selection = alloc(blocks, 1200, reserved);
+    expect(selection.kind).toBe("ok");
+    expect(selection.usedChars + selection.reservedChars).toBeLessThanOrEqual(1200);
+    expect(wrapLongLines(selection.text)).toBe(selection.text);
+
+    const final = formatSummary(
+      { ...buildSections({ blocks, briefText: selection.text }), briefTranscript: selection.text },
+      { capBriefTranscript: false },
+    );
+    expect(final.split(HISTORICAL_NOTE).length - 1).toBe(0); // note is added by the caller once, not here
+    expect(final).toContain("fix the bug");
+  });
+
+  it("returns an explicit budget-too-small result instead of a fake empty summary", () => {
+    const selection = alloc([{ kind: "user", text: "x".repeat(500), sourceIndex: 0 }], 20);
+    expect(selection.kind).toBe("budget-too-small");
+    expect(selection.text).toBe("");
+  });
+
+  it("does not starve user minima to fund tools", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "user", text: "important user requirement", sourceIndex: 0 },
+      { kind: "user", text: "second requirement", sourceIndex: 1 },
+    ];
+    for (let i = 0; i < 20; i++) {
+      blocks.push({ kind: "tool_call", name: "Read", args: { path: `f${i}.ts` }, sourceIndex: 2 + i });
+    }
+    const selection = alloc(blocks, 500);
+    expect(selection.kind).toBe("ok");
+    expect(selection.text).toContain("important user requirement");
+    expect(selection.text).toContain("second requirement");
+    expect(selection.usedChars + selection.reservedChars).toBeLessThanOrEqual(500);
+  });
+
+  it("keeps 100 short user messages when they fit (no fixed count cap)", () => {
+    const blocks: NormalizedBlock[] = Array.from({ length: 100 }, (_, i) => ({
+      kind: "user" as const, text: `u${i}`, sourceIndex: i,
+    }));
+    const selection = alloc(blocks, 3000);
+    expect(selection.kind).toBe("ok");
+    expect(selection.text).toContain("u0 (#0)");
+    expect(selection.text).toContain("u99 (#99)");
+    expect(selection.usedChars + selection.reservedChars).toBeLessThanOrEqual(3000);
+  });
+
+  it("does not split long unpunctuated Chinese or combining clusters", () => {
+    const zh = "这是一个没有标点的很长的中文任务描述".repeat(40);
+    const zhSelection = alloc([{ kind: "user", text: zh, sourceIndex: 0 }], 300);
+    expect(zhSelection.kind).toBe("ok");
+    expect(zhSelection.text).toContain("(#0)");
+    expect(zhSelection.text).toMatch(/\[omitted \d+ of \d+ chars; recall #0\]/);
+
+    const combining = "e\u0301".repeat(300);
+    const combiningSelection = alloc([{ kind: "user", text: combining, sourceIndex: 1 }], 300);
+    expect(combiningSelection.kind).toBe("ok");
+    // A combining mark may never begin a line after the excerpt boundary.
+    expect(combiningSelection.text).not.toMatch(/(^|\n)\u0301/);
+  });
+  it("does not stall on narrow sticky budget bands (T05/T06 retry convergence)", () => {
+    const blocks: NormalizedBlock[] = [];
+    let index = 0;
+    blocks.push({ kind: "user", text: "u0", sourceIndex: index++ });
+    blocks.push({ kind: "user", text: "u1", sourceIndex: index++ });
+    for (let i = 0; i < 6; i++) {
+      blocks.push({ kind: "assistant", text: "a".repeat(100), sourceIndex: index++ });
+    }
+    blocks.push({ kind: "assistant", text: "x".repeat(1200), sourceIndex: index++ });
+    for (let i = 0; i < 30; i++) {
+      blocks.push({ kind: "tool_call", name: "Read", args: { path: "src/f" + i + ".ts" }, sourceIndex: index++ });
+    }
+    // These exact budgets returned budget-too-small before the retry estimate
+    // accumulated overshoot against the current body budget instead of the total.
+    for (const budget of [2050, 2051, 2076, 2077]) {
+      const selection = alloc(blocks, budget, 400);
+      expect(selection.kind).toBe("ok");
+      expect(selection.usedChars + selection.reservedChars).toBeLessThanOrEqual(budget);
+    }
   });
 });

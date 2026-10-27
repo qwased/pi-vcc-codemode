@@ -1,6 +1,18 @@
 import type { NormalizedBlock, FileOps } from "../types";
 import { extractPath } from "./tool-args";
-import { compileBrief, heredocCloseIndex } from "./brief";
+import {
+  compileBrief,
+  heredocCloseIndex,
+  renderTextCandidate,
+  renderToolCandidate,
+  renderTextOmissionMarker,
+  renderToolOmissionMarker,
+  BRIEF_MIN_TEXT_CHARS,
+  BRIEF_TEXT_STEP_CHARS,
+  type BriefCandidate,
+  type BriefSelection,
+} from "./brief";
+import { wrapLongLines } from "./format";
 
 export interface BriefRankingOptions {
   /** Maximum normalized blocks used to build the brief transcript. */
@@ -280,4 +292,459 @@ export const selectRankedBriefBlocks = (
   }
 
   return [...selected].sort((a, b) => a - b).map((i) => blocks[i]);
+};
+
+// ── new codemode path: role budgets, actual-cost rendering ────────────────
+
+export interface BriefAllocationOptions {
+  /** Total budget for the whole brief, including note/headers/separators. */
+  maxChars: number;
+  /** Actual chars of note + structure + header sections already reserved. */
+  reservedChars?: number;
+}
+
+interface TextAllocation {
+  keep: Map<string, number>;
+  folded: BriefCandidate[];
+  marker?: string;
+  used: number;
+  full: boolean;
+}
+
+interface ToolAllocation {
+  selected: Map<string, "short" | "normal">;
+  omitted: BriefCandidate[];
+  marker?: string;
+  used: number;
+  full: boolean;
+}
+
+// Costs are measured after wrapping: the final body is wrapped, and a
+// pre-wrap estimate lets a wrapped long line overshoot the quota silently.
+const textCost = (candidate: BriefCandidate, keep: number): number =>
+  wrapLongLines(renderTextCandidate(candidate, keep)).length + 1;
+const toolCost = (candidate: BriefCandidate, version: "short" | "normal"): number =>
+  wrapLongLines(renderToolCandidate(candidate, version)).length + 1;
+const markerCost = (text: string): number => wrapLongLines(text).length + 1;
+
+const allocateTextRole = (roleCandidates: BriefCandidate[], quota: number): TextAllocation => {
+  if (roleCandidates.length === 0) {
+    return { keep: new Map(), folded: [], used: 0, full: true };
+  }
+  const role = roleCandidates[0].role === "user" ? "user" : "assistant";
+
+  const entries = roleCandidates.map((candidate) => {
+    const length = candidate.sourceText.length;
+    const minKeep = Math.min(length, BRIEF_MIN_TEXT_CHARS);
+    const minCost = textCost(candidate, minKeep);
+    const fullCost = textCost(candidate, length);
+    const keep = fullCost <= minCost ? length : minKeep;
+    return { candidate, length, keep, cost: Math.min(minCost, fullCost) };
+  });
+
+  let fold = 0;
+  let marker = "";
+  let used = entries.reduce((sum, entry) => sum + entry.cost, 0);
+
+  if (used > quota) {
+    for (fold = 1; fold <= entries.length; fold++) {
+      const folded = entries.slice(0, fold).map((entry) => entry.candidate);
+      const nextMarker = renderTextOmissionMarker(role, folded);
+      const keptCost = entries.slice(fold).reduce((sum, entry) => sum + entry.cost, 0);
+      if (markerCost(nextMarker) + keptCost <= quota) {
+        marker = nextMarker;
+        used = markerCost(marker) + keptCost;
+        break;
+      }
+    }
+    if (fold > entries.length) {
+      // Not even the newest minimum fits: fold everything, keep only the marker.
+      fold = entries.length;
+      marker = renderTextOmissionMarker(role, entries.map((entry) => entry.candidate));
+      used = markerCost(marker);
+    }
+  }
+
+  const kept = entries.slice(fold);
+  const keep = new Map<string, number>();
+  for (const entry of kept) keep.set(entry.candidate.key, entry.keep);
+
+  let remaining = quota - used;
+  const upgrades = kept
+    .filter((entry) => entry.keep < entry.length)
+    .map((entry) => ({ entry, delta: textCost(entry.candidate, entry.length) - textCost(entry.candidate, entry.keep) }))
+    .sort((a, b) => a.delta - b.delta || b.entry.candidate.order - a.entry.candidate.order);
+  for (const upgrade of upgrades) {
+    if (upgrade.delta <= 0) {
+      keep.set(upgrade.entry.candidate.key, upgrade.entry.length);
+      continue;
+    }
+    if (upgrade.delta <= remaining) {
+      keep.set(upgrade.entry.candidate.key, upgrade.entry.length);
+      remaining -= upgrade.delta;
+    }
+  }
+
+  let progressed = remaining > 0;
+  while (progressed && remaining > 0) {
+    progressed = false;
+    for (let i = kept.length - 1; i >= 0; i--) {
+      const entry = kept[i];
+      const current = keep.get(entry.candidate.key)!;
+      if (current >= entry.length) continue;
+      const next = Math.min(entry.length, current + BRIEF_TEXT_STEP_CHARS);
+      const delta = textCost(entry.candidate, next) - textCost(entry.candidate, current);
+      if (delta > 0 && delta <= remaining) {
+        keep.set(entry.candidate.key, next);
+        remaining -= delta;
+        progressed = true;
+      }
+    }
+  }
+
+  used = marker ? markerCost(marker) : 0;
+  for (const entry of kept) used += textCost(entry.candidate, keep.get(entry.candidate.key)!);
+  const full = kept.length === entries.length &&
+    kept.every((entry) => keep.get(entry.candidate.key) === entry.length);
+
+  return {
+    keep,
+    folded: entries.slice(0, fold).map((entry) => entry.candidate),
+    ...(marker ? { marker } : {}),
+    used,
+    full,
+  };
+};
+
+const allocateToolRole = (toolCandidates: BriefCandidate[], quota: number): ToolAllocation => {
+  if (toolCandidates.length === 0) {
+    return { selected: new Map(), omitted: [], used: 0, full: true };
+  }
+  const byKey = new Map(toolCandidates.map((candidate) => [candidate.key, candidate]));
+  const sorted = [...toolCandidates].sort((a, b) => b.score - a.score || b.order - a.order);
+  const selected = new Map<string, "short" | "normal">();
+  let remaining = quota;
+
+  // A 20% channel for observed errors; unused reserve returns to the pool.
+  const errorReserve = Math.floor(quota * 0.2);
+  let errorUsed = 0;
+  for (const candidate of sorted) {
+    if (!candidate.evidence?.observedError) continue;
+    const cost = toolCost(candidate, "short");
+    if (errorUsed + cost <= errorReserve && cost <= remaining) {
+      selected.set(candidate.key, "short");
+      errorUsed += cost;
+      remaining -= cost;
+    }
+  }
+  for (const candidate of sorted) {
+    if (selected.has(candidate.key)) continue;
+    const cost = toolCost(candidate, "short");
+    if (cost <= remaining) {
+      selected.set(candidate.key, "short");
+      remaining -= cost;
+    }
+  }
+  for (const candidate of sorted) {
+    if (selected.get(candidate.key) !== "short") continue;
+    const delta = toolCost(candidate, "normal") - toolCost(candidate, "short");
+    if (delta > 0 && delta <= remaining) {
+      selected.set(candidate.key, "normal");
+      remaining -= delta;
+    }
+  }
+
+  let omitted = toolCandidates.filter((candidate) => !selected.has(candidate.key));
+  let marker = omitted.length > 0 ? renderToolOmissionMarker(omitted) : "";
+  const usedNow = (): number => {
+    let total = marker ? markerCost(marker) : 0;
+    for (const [key, version] of selected) total += toolCost(byKey.get(key)!, version);
+    return total;
+  };
+  let used = usedNow();
+
+  // The omission marker is part of the interface: if it does not fit, drop
+  // lower-score selected tools until it does.
+  while (used > quota && selected.size > 0) {
+    let dropKey: string | undefined;
+    let dropScore = Infinity;
+    for (const key of selected.keys()) {
+      const candidate = byKey.get(key)!;
+      if (candidate.score < dropScore) {
+        dropScore = candidate.score;
+        dropKey = key;
+      }
+    }
+    if (!dropKey) break;
+    selected.delete(dropKey);
+    omitted = toolCandidates.filter((candidate) => !selected.has(candidate.key));
+    marker = omitted.length > 0 ? renderToolOmissionMarker(omitted) : "";
+    used = usedNow();
+  }
+
+  return {
+    selected,
+    omitted,
+    ...(marker ? { marker } : {}),
+    used,
+    full: omitted.length === 0 && [...selected.values()].every((version) => version === "normal"),
+  };
+};
+
+const assembleBriefBody = (
+  candidates: BriefCandidate[],
+  textAllocations: { user: TextAllocation; assistant: TextAllocation },
+  tools: ToolAllocation,
+): { text: string; usedChars: number; counts: Record<string, number> } => {
+  type Item = { order: number; role: "user" | "assistant"; text: string };
+  const items: Item[] = [];
+
+  for (const role of ["user", "assistant"] as const) {
+    const allocation = textAllocations[role];
+    for (const candidate of candidates) {
+      if (candidate.role !== role) continue;
+      const keep = allocation.keep.get(candidate.key);
+      if (keep === undefined) continue;
+      items.push({ order: candidate.order, role, text: renderTextCandidate(candidate, keep) });
+    }
+    if (allocation.marker && allocation.folded.length > 0) {
+      items.push({ order: allocation.folded[0].order - 0.5, role, text: allocation.marker });
+    }
+  }
+
+  const byKey = new Map(candidates.map((candidate) => [candidate.key, candidate]));
+  for (const [key, version] of tools.selected) {
+    const candidate = byKey.get(key)!;
+    items.push({ order: candidate.order, role: "assistant", text: renderToolCandidate(candidate, version) });
+  }
+  if (tools.marker && tools.omitted.length > 0) {
+    items.push({
+      order: Math.min(...tools.omitted.map((candidate) => candidate.order)) - 0.5,
+      role: "assistant",
+      text: tools.marker,
+    });
+  }
+
+  items.sort((a, b) => a.order - b.order);
+  const out: string[] = [];
+  let lastCategory: "user" | "assistant" | undefined;
+  for (const item of items) {
+    if (item.role !== lastCategory) {
+      if (out.length > 0) out.push("");
+      out.push(`[${item.role}]`);
+      lastCategory = item.role;
+    }
+    out.push(item.text);
+  }
+
+  // Same-selection audit counts: full/excerpt/fold and per-class retention.
+  const textStats = (role: "user" | "assistant") => {
+    const allocation = textAllocations[role];
+    let full = 0;
+    let excerpted = 0;
+    let keptChars = 0;
+    let sourceChars = 0;
+    for (const candidate of candidates) {
+      if (candidate.role !== role) continue;
+      const keep = allocation.keep.get(candidate.key);
+      if (keep === undefined) continue;
+      sourceChars += candidate.sourceText.length;
+      keptChars += keep;
+      if (keep >= candidate.sourceText.length) full++;
+      else excerpted++;
+    }
+    return { full, excerpted, keptChars, sourceChars };
+  };
+  const userStats = textStats("user");
+  const assistantStats = textStats("assistant");
+
+  const toolClass = (candidate: BriefCandidate): "mutation" | "readonly" | "unknown" => {
+    const category = candidate.evidence?.category;
+    return category === "mutation" || category === "readonly" ? category : "unknown";
+  };
+  const keptClass = { mutation: 0, readonly: 0, unknown: 0 };
+  let toolErrorKept = 0;
+  let toolGoalKept = 0;
+  let toolBlockedKept = 0;
+  for (const key of tools.selected.keys()) {
+    const candidate = byKey.get(key)!;
+    keptClass[toolClass(candidate)]++;
+    if (candidate.evidence?.observedError) toolErrorKept++;
+    if (candidate.hint?.goal) toolGoalKept++;
+    if (candidate.hint?.blocked) toolBlockedKept++;
+  }
+  const omittedClass = { mutation: 0, readonly: 0, unknown: 0 };
+  let toolErrorOmitted = 0;
+  for (const candidate of tools.omitted) {
+    omittedClass[toolClass(candidate)]++;
+    if (candidate.evidence?.observedError) toolErrorOmitted++;
+  }
+  const totals = { mutation: 0, readonly: 0, unknown: 0, error: 0, goal: 0, blocked: 0 };
+  let annotationGoalRejected = 0;
+  let annotationBlockedRejected = 0;
+  for (const candidate of candidates) {
+    if (candidate.role !== "tool") continue;
+    totals[toolClass(candidate)]++;
+    if (candidate.evidence?.observedError) totals.error++;
+    if (candidate.hint?.goal) totals.goal++;
+    if (candidate.hint?.blocked) totals.blocked++;
+    annotationGoalRejected += candidate.hintRejected?.goal ?? 0;
+    annotationBlockedRejected += candidate.hintRejected?.blocked ?? 0;
+  }
+
+  const text = wrapLongLines(out.join("\n"));
+  return {
+    text,
+    usedChars: text.length,
+    counts: {
+      userKept: textAllocations.user.keep.size,
+      userFull: userStats.full,
+      userExcerpted: userStats.excerpted,
+      userFolded: textAllocations.user.folded.length,
+      userKeptChars: userStats.keptChars,
+      userSourceChars: userStats.sourceChars,
+      assistantKept: textAllocations.assistant.keep.size,
+      assistantFull: assistantStats.full,
+      assistantExcerpted: assistantStats.excerpted,
+      assistantFolded: textAllocations.assistant.folded.length,
+      assistantKeptChars: assistantStats.keptChars,
+      assistantSourceChars: assistantStats.sourceChars,
+      toolKept: tools.selected.size,
+      toolOmitted: tools.omitted.length,
+      toolNormal: [...tools.selected.values()].filter((version) => version === "normal").length,
+      toolShort: [...tools.selected.values()].filter((version) => version === "short").length,
+      toolMutationKept: keptClass.mutation,
+      toolReadonlyKept: keptClass.readonly,
+      toolUnknownKept: keptClass.unknown,
+      toolMutationOmitted: omittedClass.mutation,
+      toolReadonlyOmitted: omittedClass.readonly,
+      toolUnknownOmitted: omittedClass.unknown,
+      toolErrorKept,
+      toolErrorOmitted,
+      toolGoalKept,
+      toolBlockedKept,
+      toolMutationTotal: totals.mutation,
+      toolReadonlyTotal: totals.readonly,
+      toolUnknownTotal: totals.unknown,
+      toolErrorTotal: totals.error,
+      toolGoalTotal: totals.goal,
+      toolBlockedTotal: totals.blocked,
+      annotationGoalRejected,
+      annotationBlockedRejected,
+    },
+  };
+};
+
+const allocateOnce = (candidates: BriefCandidate[], bodyBudget: number): BriefSelection => {
+  if (candidates.length === 0) {
+    return { kind: "ok", text: "", usedChars: 0, reservedChars: 0, counts: {} };
+  }
+
+  const cheapest = Math.min(...candidates.map((candidate) =>
+    candidate.role === "tool"
+      ? toolCost(candidate, "short")
+      : Math.min(
+          textCost(candidate, Math.min(candidate.sourceText.length, BRIEF_MIN_TEXT_CHARS)),
+          textCost(candidate, candidate.sourceText.length),
+        )));
+  if (bodyBudget < cheapest) {
+    return { kind: "budget-too-small", text: "", usedChars: 0, reservedChars: 0, counts: { budgetChars: bodyBudget } };
+  }
+
+  const users = candidates.filter((candidate) => candidate.role === "user");
+  const assistants = candidates.filter((candidate) => candidate.role === "assistant");
+  const tools = candidates.filter((candidate) => candidate.role === "tool");
+
+  let userQuota = Math.floor(bodyBudget * 0.4);
+  let assistantQuota = Math.floor(bodyBudget * 0.3);
+  let toolQuota = bodyBudget - userQuota - assistantQuota;
+
+  let userAlloc = allocateTextRole(users, userQuota);
+  let assistantAlloc = allocateTextRole(assistants, assistantQuota);
+  let toolAlloc = allocateToolRole(tools, toolQuota);
+
+  // Borrow unused quota, in order, only into roles that are not fully kept.
+  for (let pass = 0; pass < 2; pass++) {
+    let unused = bodyBudget - (userAlloc.used + assistantAlloc.used + toolAlloc.used);
+    if (unused <= 0) break;
+    let progressed = false;
+
+    if (!userAlloc.full) {
+      const next = allocateTextRole(users, userAlloc.used + unused);
+      if (next.used > userAlloc.used) {
+        userQuota = userAlloc.used + unused;
+        userAlloc = next;
+        unused = bodyBudget - (userAlloc.used + assistantAlloc.used + toolAlloc.used);
+        progressed = true;
+      }
+    }
+    if (unused <= 0) break;
+    if (!assistantAlloc.full) {
+      const next = allocateTextRole(assistants, assistantAlloc.used + unused);
+      if (next.used > assistantAlloc.used) {
+        assistantQuota = assistantAlloc.used + unused;
+        assistantAlloc = next;
+        unused = bodyBudget - (userAlloc.used + assistantAlloc.used + toolAlloc.used);
+        progressed = true;
+      }
+    }
+    if (unused <= 0) break;
+    if (!toolAlloc.full) {
+      const next = allocateToolRole(tools, toolAlloc.used + unused);
+      if (next.used > toolAlloc.used) {
+        toolQuota = toolAlloc.used + unused;
+        toolAlloc = next;
+        progressed = true;
+      }
+    }
+    if (!progressed) break;
+  }
+
+  const assembled = assembleBriefBody(candidates, { user: userAlloc, assistant: assistantAlloc }, toolAlloc);
+  return {
+    kind: "ok",
+    text: assembled.text,
+    usedChars: assembled.usedChars,
+    reservedChars: 0,
+    counts: { ...assembled.counts, budgetChars: bodyBudget },
+  };
+};
+
+/**
+ * Allocate the new codemode brief. Text roles get independent budgets and
+ * fold their oldest continuous range only when even the minimum excerpts do
+ * not fit; tools take a short version first and upgrade with spare quota.
+ * The final body is wrapped here; the wrapper retries with a reduced budget
+ * if wrapping pushed it past `maxChars - reservedChars`.
+ */
+export const allocateBriefBudget = (
+  candidates: BriefCandidate[],
+  options: BriefAllocationOptions,
+): BriefSelection => {
+  const reservedChars = Math.max(0, Math.floor(options.reservedChars ?? 0));
+  const total = Math.floor(options.maxChars) - reservedChars;
+  // Content costs are exact after wrapping; the remaining difference is the
+  // [user]/[assistant] section structure. Reserve the structure measured in
+  // the previous attempt so a wrapped body never silently overshoots.
+  let structure = 0;
+  let last: BriefSelection | undefined;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const selection = allocateOnce(candidates, total - structure);
+    last = selection;
+    if (selection.kind === "budget-too-small") break;
+    if (selection.usedChars <= total) {
+      return { ...selection, reservedChars };
+    }
+    // Accumulate the overshoot against the current body budget. Replacing
+    // the estimate with the last overage (used - total) can stall on the
+    // narrow bands where role allocation stays sticky as the budget drops.
+    structure += selection.usedChars - (total - structure);
+  }
+  return {
+    kind: "budget-too-small",
+    text: "",
+    usedChars: 0,
+    reservedChars,
+    counts: last?.counts ?? {},
+  };
 };

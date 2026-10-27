@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { formatSummary } from "../src/core/format";
+import { formatSummary, trimHeaderToBudget } from "../src/core/format";
 import type { SectionData } from "../src/sections";
 
 const empty: SectionData = {
@@ -67,5 +67,44 @@ describe("formatSummary", () => {
     };
     const r = formatSummary(data);
     expect(Math.max(...r.split("\n").map((line) => line.length))).toBeLessThanOrEqual(120);
+  });
+});
+
+describe("trimHeaderToBudget", () => {
+  const headers = [
+    "[Session Goal]",
+    "- fix the billing migration",
+    "[Files And Changes]",
+    "- Modified: src/billing.ts",
+    "- Read: src/queue.ts",
+  ].join("\n");
+
+  it("leaves a header that already fits untouched", () => {
+    const result = trimHeaderToBudget(headers, 1000);
+    expect(result).toEqual({ text: headers, usedChars: headers.length, truncated: false, omittedItems: 0 });
+  });
+
+  it("trims at whole-line boundaries with a counted marker", () => {
+    const result = trimHeaderToBudget(headers, 70);
+    expect(result.truncated).toBe(true);
+    expect(result.usedChars).toBeLessThanOrEqual(70);
+    expect(result.omittedItems).toBeGreaterThan(0);
+    expect(result.text).toContain("header line");
+    expect(result.text).toContain("[Session Goal]");
+  });
+
+  it("clips a single overlong item at a grapheme boundary instead of dropping it", () => {
+    const long = `- ${"中".repeat(200)}👍🏽`;
+    const result = trimHeaderToBudget(long, 40);
+    expect(result.truncated).toBe(true);
+    expect(result.usedChars).toBeLessThanOrEqual(40);
+    expect(result.text).toContain("…");
+    expect(result.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  });
+
+  it("returns an empty header only when even the marker cannot fit", () => {
+    const result = trimHeaderToBudget(headers, 5);
+    expect(result.text).toBe("");
+    expect(result.truncated).toBe(true);
   });
 });

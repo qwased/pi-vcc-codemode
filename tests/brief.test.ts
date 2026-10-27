@@ -1,6 +1,14 @@
 import { describe, it, expect } from "bun:test";
-import { compileBrief } from "../src/core/brief";
+import {
+  buildBriefCandidates,
+  compileBrief,
+  renderTextCandidate,
+  renderToolCandidate,
+} from "../src/core/brief";
+import { normalize } from "../src/core/normalize";
 import type { NormalizedBlock } from "../src/types";
+import { assistantWithToolCall, toolResult, userMsg } from "./fixtures";
+import { codemodeCall, codemodeResult, codemodeScript, nestedCall } from "./codemode-fixtures";
 
 describe("compileBrief", () => {
   it("returns empty string for no blocks", () => {
@@ -375,5 +383,91 @@ describe("compileBrief", () => {
     expect(r).not.toContain("entries omitted");
     expect(r).toContain("c1");
     expect(r).toContain("c8");
+  });
+});
+
+describe("new codemode brief candidates", () => {
+  it("keeps raw user/assistant text and uses the fixed tool line format", () => {
+    const blocks = normalize([
+      userMsg("Please keep THIS exact wording"),
+      assistantWithToolCall("Read", { path: "src/a.ts" }),
+      toolResult("Read", "body"),
+    ]);
+    const candidates = buildBriefCandidates(blocks);
+    const user = candidates.find((c) => c.role === "user")!;
+    expect(user.sourceText).toBe("Please keep THIS exact wording");
+    expect(renderTextCandidate(user, user.sourceText.length)).toBe("Please keep THIS exact wording (#0)");
+    const tool = candidates.find((c) => c.role === "tool")!;
+    expect(renderToolCandidate(tool)).toBe("* Read \"src/a.ts\" (#1)");
+  });
+
+  it("uses intent/code navigation without the static name prefix and hides blocked text", () => {
+    const code = codemodeScript("检查缓存", "await tools.read({ path: \"a\" });", false)
+      .replace("// goal: 检查缓存", "// goal: 检查缓存\n// blocked: SECRET_BLOCKER");
+    const blocks = normalize([codemodeCall(code)]);
+    // The activity category comes from recorded nested calls, not the script text.
+    blocks.push(...normalize([codemodeResult({
+      toolCallId: "tc_codemode",
+      calls: [nestedCall({ name: "write", arguments: { path: "a" } })],
+    })]));
+    const [tool] = buildBriefCandidates(blocks);
+    expect(tool.tool!.normalNav).toBe("intent: 检查缓存");
+    expect(tool.hint?.blocked).toBe("SECRET_BLOCKER");
+    expect(tool.sourceText).not.toContain("SECRET_BLOCKER");
+    expect(renderToolCandidate(tool)).toBe("* codemode intent: 检查缓存 (#0)");
+    expect(tool.score).toBe(30 + 12 + 4 + 2); // mutation + recency + goal + blocked (last 25%)
+  });
+
+  it("falls back to a bounded code preview without a goal", () => {
+    const code = `const marker = 1; ${"x".repeat(300)}`;
+    const blocks = normalize([codemodeCall(code)]);
+    const [tool] = buildBriefCandidates(blocks);
+    expect(tool.tool!.normalNav.startsWith("code: ")).toBe(true);
+    expect(tool.tool!.normalNav.length).toBeLessThanOrEqual("code: ".length + 80);
+  });
+
+  it("pairs each call with its own result inside the assistant message", () => {
+    const blocks = normalize([
+      codemodeCall(codemodeScript("read a", "await tools.read({path:\"a\"});", false), "c1"),
+      codemodeResult({ toolCallId: "c1", calls: [nestedCall({ name: "read", arguments: { path: "a" } })] }),
+      codemodeCall(codemodeScript("write b", "await tools.write({path:\"b\"});", false), "c1"),
+      codemodeResult({ toolCallId: "c1", calls: [nestedCall({ name: "write", arguments: { path: "b" } })], isError: true }),
+    ]);
+    const tools = buildBriefCandidates(blocks).filter((c) => c.role === "tool");
+    expect(tools).toHaveLength(2);
+    expect(tools[0].evidence).toMatchObject({ category: "readonly", resultIndex: 1 });
+    expect(tools[1].evidence).toMatchObject({ category: "mutation", resultIndex: 3, observedError: true });
+    expect(renderToolCandidate(tools[1])).toContain("{error observed; result #3}");
+  });
+
+  it("does not pair a reused call id across the next assistant message", () => {
+    const blocks = normalize([
+      codemodeCall(codemodeScript("first", "await tools.read({path:\"a\"});", false), "c1"),
+      codemodeResult({ toolCallId: "c1", calls: [nestedCall({ name: "read" })] }),
+      codemodeCall(codemodeScript("second", "await tools.write({path:\"b\"});", false), "c1"),
+      codemodeResult({ toolCallId: "c1", calls: [nestedCall({ name: "write" })] }),
+    ]);
+    const tools = buildBriefCandidates(blocks).filter((c) => c.role === "tool");
+    expect(tools[0].evidence?.resultIndex).toBe(1);
+    expect(tools[1].evidence?.resultIndex).toBe(3);
+  });
+
+  it("penalizes consecutive identical activity except the newest", () => {
+    const same = codemodeScript("repeat", "await tools.read({path:\"a\"});", false);
+    const blocks = normalize([
+      codemodeCall(same, "c1"), codemodeResult({ toolCallId: "c1", calls: [nestedCall({ name: "read" })] }),
+      codemodeCall(same, "c2"), codemodeResult({ toolCallId: "c2", calls: [nestedCall({ name: "read" })] }),
+    ]);
+    const tools = buildBriefCandidates(blocks).filter((c) => c.role === "tool");
+    expect(tools[0].score).toBe(tools[1].score - 24); // recency 12 + duplicate penalty 12
+  });
+
+  it("renders long text as head, omission marker and tail on grapheme boundaries", () => {
+    const text = "A".repeat(200) + "👍🏽" + "B".repeat(200);
+    const candidate = buildBriefCandidates([{ kind: "user", text, sourceIndex: 7 }])[0];
+    const rendered = renderTextCandidate(candidate, 80);
+    expect(rendered).toContain("(#7)");
+    expect(rendered).toMatch(/\[omitted \d+ of 404 chars; recall #7\]/);
+    expect(rendered).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
   });
 });
