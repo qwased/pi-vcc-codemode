@@ -143,9 +143,39 @@ describe("/pi-vcc-recall command pagination and hard-cap truncation signaling", 
   });
 });
 
+describe("/pi-vcc-recall scan/read syntax", () => {
+  it("scans via standalone tokens and resumes with the returned cursor", async () => {
+    const { dir, file, ids } = makeSession(25, (i) => `MATCH_ME ${i}`);
+    try {
+      const { handler, sent } = register();
+      await invoke(handler, file, ids, "scan:true scope:all MATCH_ME");
+      expect(sent[0].content).toContain("This page: 20 new matches");
+      const cursor = sent[0].content.match(/cursor:(\S+)/)?.[1];
+      expect(cursor).toBeTruthy();
+
+      await invoke(handler, file, ids, `scan:true cursor:${cursor} scope:all MATCH_ME`);
+      expect(sent[1].content).toContain("25 matches total");
+      expect(sent[1].content).toContain("Scan complete.");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a window via read:N and returns the command-style next call", async () => {
+    const { dir, file, ids } = makeSession(1, () => "D".repeat(6000));
+    try {
+      const { handler, sent } = register();
+      await invoke(handler, file, ids, "read:0 offset:0 length:1000 scope:all");
+      expect(sent[0].content).toContain("read 0-1000 of");
+      expect(sent[0].content).toContain("/pi-vcc-recall read:0 offset:1000 length:1000 scope:all");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // Issue #1: a brand-new session has no JSONL on disk yet.
-describe("/pi-vcc-recall in a fresh session with no session file on disk", () => {
-  const freshSessionFile = () => {
+describe("/pi-vcc-recall in a fresh session with no session file on disk", () => {  const freshSessionFile = () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-vcc-recall-fresh-"));
     return { dir, file: join(dir, "sessions", "not-written-yet.jsonl") };
   };

@@ -8,6 +8,14 @@ import type { RecallRequest } from "./recall-request";
 import type { Message, NestedToolCalls } from "@earendil-works/pi-ai";
 import { isCodemodeMessage } from "../codemode/active";
 import type { RenderedEntry } from "./render-entries";
+import {
+  readSavedRecord,
+  scanSavedFields,
+  SCAN_OUTPUT_CHARS,
+  READ_MAX_LENGTH,
+  type ReadOutcome,
+  type ScanOutcome,
+} from "./recall-full";
 
 export const SEARCH_PAGE_SIZE = 5;
 export const RANGE_PAGE_SIZE = 20;
@@ -29,14 +37,33 @@ export interface RecallView {
    * turn in progress or the context was compacted inside it.
    */
   currentTurn(): Set<number>;
+  /** Entry ids on the active path; undefined for scope:'all'. */
+  allowedEntryIds(): Set<string> | undefined;
+  /** Every entry id on the current branch, for scan-cursor validity. */
+  branchEntryIds(): Set<string>;
+  /** Last entry id on the current branch (new scan cursor anchor). */
+  branchAnchor(): string;
 }
+
+const lineageIdsOf = (sessionManager: LineageSessionManagerLike, scope: RecallScope): Set<string> | undefined =>
+  scope === "lineage" ? getActiveLineageEntryIds(sessionManager) : undefined;
+
+const branchIdsOf = (sessionManager: LineageSessionManagerLike): string[] => {
+  try {
+    return (sessionManager.getBranch() ?? [])
+      .map((entry) => entry?.id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+  } catch {
+    return [];
+  }
+};
 
 export const openRecallView = (
   sessionFile: string,
   scope: RecallScope,
   sessionManager: LineageSessionManagerLike,
 ): RecallView => {
-  const lineageEntryIds = scope === "lineage" ? getActiveLineageEntryIds(sessionManager) : undefined;
+  const lineageEntryIds = lineageIdsOf(sessionManager, scope);
   const cache = new Map<boolean, LoadedMessages>();
   let wide: RecallView | undefined;
   let turn: Set<number> | undefined;
@@ -57,6 +84,15 @@ export const openRecallView = (
     },
     currentTurn() {
       return (turn ??= findCurrentTurn(sessionFile, sessionManager));
+    },
+    allowedEntryIds() {
+      return lineageEntryIds;
+    },
+    branchEntryIds() {
+      return new Set(branchIdsOf(sessionManager));
+    },
+    branchAnchor() {
+      return branchIdsOf(sessionManager).at(-1) ?? "";
     },
   };
   return view;
@@ -102,6 +138,10 @@ export interface RecallPagingHints {
   nextPage(query: string, scope: RecallScope, page: number): string;
   /** Next step after a search page, pointing at its first hit. The command has none. */
   aroundHit?(index: number, scope: RecallScope): string;
+  /** Resume a partial scan with its returned cursor. */
+  scanNext?(query: string, cursor: string, scope: RecallScope): string;
+  /** Read the next window from the returned actualEnd, not offset+length. */
+  readNext?(index: number, offset: number, length: number, scope: RecallScope): string;
   /**
    * Leave the current turn (last user message on the path and everything after
    * it) out of search: the agent has it in context, and its question would
@@ -119,6 +159,9 @@ const IGNORED_REASON: Record<RecallRequest["action"]["kind"], string> = {
   range: "range runs alone; send the rest in a separate call",
   search: "",
   recent: "page applies to query or range results",
+  scan: "",
+  read: "",
+  invalid: "",
 };
 
 /** One line naming params the action did not use, so nothing is dropped silently. */
@@ -156,6 +199,15 @@ const runAction = (request: RecallRequest, view: RecallView, hints: RecallPaging
 
     case "search":
       return runSearch(action.query, action.page, view, hints, hints.skipCurrentTurn ? view.currentTurn() : undefined);
+
+    case "scan":
+      return runScan(action.query, action.cursor, view, hints);
+
+    case "read":
+      return runRead(action.index, action.offset, action.length, view, hints);
+
+    case "invalid":
+      return action.message;
 
     case "recent": {
       const { rendered } = view.load(false);
@@ -329,6 +381,127 @@ const runSearch = (query: string, page: number, view: RecallView, hints: RecallP
   const around = pageHits.length > 0 && hints.aroundHit ? hints.aroundHit(pageHits[0].index, view.scope) : "";
   const footer = page < totalPages ? hints.nextPage(query, view.scope, page + 1) : "";
   return formatRecallOutput(pageHits, query, header) + around + footer;
+};
+
+const scopeLabel = (scope: RecallScope): string => scope === "all" ? "scope: all" : "scope: lineage";
+
+const boundScanOutput = (text: string): string => {
+  if (text.length <= SCAN_OUTPUT_CHARS) return text;
+  const marker = "\n[output truncated at the scan character budget]";
+  return text.slice(0, SCAN_OUTPUT_CHARS - marker.length) + marker;
+};
+
+const formatScanOutcome = (
+  outcome: ScanOutcome,
+  query: string,
+  scope: RecallScope,
+  hints: RecallPagingHints,
+): string => {
+  if (!outcome.ok) return outcome.error!;
+  if (outcome.missingFile) {
+    return `No saved session history to scan (${scopeLabel(scope)}).`;
+  }
+
+  const lines: string[] = [
+    `Scan of saved fields (literal, case-insensitive; ${scopeLabel(scope)}).`,
+  ];
+  const matches = `${outcome.totalHits} match${outcome.totalHits === 1 ? "" : "es"}`;
+  if (outcome.hits.length === 0) {
+    lines.push(outcome.complete
+      ? `No matches. Scan complete: ${outcome.scanned} messages scanned.`
+      : `No matches on this page. Scan is partial: ${outcome.scanned} messages scanned, ${matches} so far.`);
+  } else {
+    lines.push(`This page: ${outcome.hits.length} new match${outcome.hits.length === 1 ? "" : "es"}; ${matches} total; ${outcome.scanned} messages scanned.`);
+    for (const hit of outcome.hits) {
+      lines.push("", `#${hit.index} [${hit.role}] ${hit.snippet}`);
+    }
+  }
+  if (outcome.malformed > 0) {
+    lines.push("", `Coverage incomplete: ${outcome.malformed} malformed record${outcome.malformed === 1 ? "" : "s"} skipped.`);
+  }
+  if (outcome.complete) {
+    lines.push("", "Scan complete.");
+  } else {
+    const next = outcome.nextCursor && hints.scanNext
+      ? hints.scanNext(query, outcome.nextCursor, scope)
+      : outcome.nextCursor
+        ? `\n--- Continue scan with cursor:${outcome.nextCursor} ---`
+        : "";
+    if (next) lines.push(next);
+  }
+  return boundScanOutput(lines.join("\n"));
+};
+
+const formatReadOutcome = (
+  outcome: ReadOutcome,
+  requested: { index: number; offset: number; length: number },
+  scope: RecallScope,
+  hints: RecallPagingHints,
+): string => {
+  if (!outcome.ok) return outcome.error!;
+  const offPath = outcome.offPath
+    ? `#${outcome.index} is not on the current conversation path (edited or retried branch).\n\n`
+    : "";
+  const role = outcome.role ?? "entry";
+  const window = outcome.window!;
+
+  if (window.kind === "eof") {
+    return offPath + (window.total === 0
+      ? `#${outcome.index} [${role}] has no readable saved fields (excluded or empty record); nothing to read.`
+      : `End of record #${outcome.index} [${role}] at offset ${window.total}; no more text.`);
+  }
+  if (window.kind === "out-of-range") {
+    return offPath + `Offset ${requested.offset} is beyond record #${outcome.index} [${role}] (${window.total} chars). Use offset:${window.total} for EOF or offset:0 to restart.`;
+  }
+  if (window.kind === "length-too-small") {
+    return offPath + `Record #${outcome.index} [${role}] at offset ${window.actualStart}: length ${requested.length} is too small for the next grapheme (needs ${window.required}). Re-call with offset:${window.actualStart} length:${window.required}.`;
+  }
+  if (window.kind === "grapheme-too-large") {
+    return offPath + `Record #${outcome.index} [${role}] at offset ${window.actualStart}: the next grapheme is ${window.required} chars, exceeding the ${READ_MAX_LENGTH}-char read limit; this record cannot be paged past this point.`;
+  }
+
+  const lines: string[] = [
+    `${offPath}#${outcome.index} [${role}] read ${window.actualStart}-${window.actualEnd} of ${window.total} chars${window.remaining > 0 ? `; ${window.remaining} remaining` : ""}`,
+    "",
+    window.text,
+  ];
+  if (outcome.pairedCallIndex !== undefined) {
+    lines.push("", `Verified paired call: #${outcome.pairedCallIndex}.`);
+  }
+  if (outcome.pairedResultIndices.length > 0) {
+    lines.push("", `Verified paired result${outcome.pairedResultIndices.length === 1 ? "" : "s"}: ${outcome.pairedResultIndices.map((i) => `#${i}`).join(", ")}.`);
+  }
+  if (window.remaining > 0) {
+    const next = hints.readNext
+      ? hints.readNext(outcome.index, window.actualEnd, requested.length, scope)
+      : `\n--- Read next: read:{ index: ${outcome.index}, offset: ${window.actualEnd}, length: ${requested.length} } ---`;
+    if (next) lines.push(next);
+  }
+  return lines.join("\n");
+};
+
+const runScan = (query: string, cursor: string | undefined, view: RecallView, hints: RecallPagingHints): string => {
+  const outcome = scanSavedFields({
+    sessionFile: view.sessionFile,
+    query,
+    scope: view.scope,
+    cursor,
+    allowedEntryIds: view.allowedEntryIds(),
+    branchEntryIds: view.branchEntryIds(),
+    branchAnchor: view.branchAnchor(),
+  });
+  return formatScanOutcome(outcome, query, view.scope, hints);
+};
+
+const runRead = (index: number, offset: number, length: number, view: RecallView, hints: RecallPagingHints): string => {
+  const outcome = readSavedRecord({
+    sessionFile: view.sessionFile,
+    index,
+    offset,
+    length,
+    allowedEntryIds: view.allowedEntryIds(),
+  });
+  return formatReadOutcome(outcome, { index, offset, length }, view.scope, hints);
 };
 
 const WRITES_FILE = /write|edit|patch/i;

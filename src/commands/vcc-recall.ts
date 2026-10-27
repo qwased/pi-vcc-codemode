@@ -9,6 +9,10 @@ const COMMAND_PAGING_HINTS: RecallPagingHints = {
     `Use /pi-vcc-recall ${query}${scopeArg(scope)} page:N with N between 1 and ${totalPages}` +
     (truncated ? "." : ", or refine your query."),
   nextPage: (query, scope, page) => `\n--- /pi-vcc-recall ${query}${scopeArg(scope)} page:${page} ---`,
+  scanNext: (query, cursor, scope) =>
+    `\n--- /pi-vcc-recall scan:true cursor:${cursor}${scopeArg(scope)} ${query} ---`,
+  readNext: (index, offset, length, scope) =>
+    `\n--- /pi-vcc-recall read:${index} offset:${offset} length:${length}${scopeArg(scope)} ---`,
 };
 
 export const registerVccRecallCommand = (pi: ExtensionAPI) => {
