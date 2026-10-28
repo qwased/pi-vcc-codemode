@@ -30,6 +30,11 @@ const cases = buildAllocatorCases();
 /**
  * Frozen from the allocator before the cost-meter / fold-scan change. Any
  * difference means the optimization changed the brief, not just its speed.
+ *
+ * The fixture's `amended` note names the only records re-measured after 0.1.4
+ * made attachRef skip the ref for text with no non-blank line. Those three cases
+ * build an empty-text candidate directly, which buildBriefCandidates cannot
+ * emit; every other record is byte-identical to the frozen run.
  */
 describe("allocator golden", () => {
   it("rebuilds exactly the fixture's case set", () => {

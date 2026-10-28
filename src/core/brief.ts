@@ -511,7 +511,7 @@ export const BRIEF_SHORT_NAV_CHARS = 80;
 
 export interface BriefToolView {
   name: string;
-  /** One-line activity navigation: `intent: ...`, `code: ...`, or arg summary. */
+  /** One-line activity navigation: `goal: ...`, `code: ...`, or arg summary. */
   shortNav: string;
   normalNav: string;
   resultIndex?: number;
@@ -638,7 +638,9 @@ export const buildBriefCandidates = (
       return;
     }
     if (block.kind === "assistant") {
-      if (!block.text) return;
+      // A whitespace-only text part carries no content; dropping it here also
+      // keeps it from taking a slot in the recency weighting below.
+      if (!block.text.trim()) return;
       candidates.push({
         key: `${order}:assistant`, order, role: "assistant",
         sourceIndex: block.sourceIndex, sourceText: block.text, score: 0,
@@ -655,12 +657,12 @@ export const buildBriefCandidates = (
     const intent = hint?.goal;
     const codeNav = code ? condenseCodeTo(code, BRIEF_CODE_CHARS, false) : "";
     const shortNav = intent
-      ? `intent: ${firstCharsEllipsis(intent, BRIEF_SHORT_NAV_CHARS)}`
+      ? `goal: ${firstCharsEllipsis(intent, BRIEF_SHORT_NAV_CHARS)}`
       : code
         ? `code: ${firstCharsEllipsis(codeNav, BRIEF_CODE_CHARS)}`
         : toolNavText(block.name, block.args);
     const normalNav = intent
-      ? `intent: ${firstCharsEllipsis(intent, BRIEF_INTENT_CHARS)}`
+      ? `goal: ${firstCharsEllipsis(intent, BRIEF_INTENT_CHARS)}`
       : code
         ? `code: ${firstCharsEllipsis(codeNav, BRIEF_CODE_CHARS)}`
         : shortNav;
@@ -749,7 +751,11 @@ const excerptText = (text: string, keepChars: number, sourceIndex?: number): str
 const attachRef = (text: string, sourceIndex?: number): string => {
   if (sourceIndex == null) return text;
   const lines = text.split("\n");
-  lines[0] = `${lines[0]} (#${sourceIndex})`;
+  // The ref belongs on the first line that has text. Leading blank lines are
+  // the caller's own formatting and stay as written; appending to line 0 would
+  // render an isolated " (#N)" line of our making.
+  const firstTextLine = lines.findIndex((line) => line.trim().length > 0);
+  if (firstTextLine >= 0) lines[firstTextLine] = `${lines[firstTextLine]} (#${sourceIndex})`;
   return lines.join("\n");
 };
 

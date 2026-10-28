@@ -1,6 +1,7 @@
 {
   "generatedFromCommit": "a59fdad",
   "note": "Generated from the unmodified allocator. Inputs are rebuilt deterministically by tests/support/allocator-cases.ts.",
+  "amended": "0.1.4 H3: random-1077, random-1138 and random-1196 were re-measured after attachRef stopped appending (#N) to text with no non-blank line. Those empty-text candidates are built directly by the case generator; buildBriefCandidates cannot emit them, so no production brief changes.",
   "cases": [
     {
       "id": "empty",
@@ -1079,7 +1080,7 @@
       "kind": "budget-too-small",
       "usedChars": 0,
       "reservedChars": 5,
-      "counts": "[[\"budgetChars\",3]]",
+      "counts": "[[\"budgetChars\",-125]]",
       "textSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
@@ -1626,10 +1627,10 @@
       "id": "random-1138",
       "shape": "hash",
       "kind": "ok",
-      "usedChars": 5642,
+      "usedChars": 5635,
       "reservedChars": 41,
       "counts": "[[\"annotationBlockedRejected\",0],[\"annotationGoalRejected\",0],[\"assistantExcerpted\",0],[\"assistantFolded\",0],[\"assistantFull\",10],[\"assistantKept\",10],[\"assistantKeptChars\",1984],[\"assistantSourceChars\",1984],[\"budgetChars\",5959],[\"toolBlockedKept\",0],[\"toolBlockedTotal\",0],[\"toolErrorKept\",0],[\"toolErrorOmitted\",0],[\"toolErrorTotal\",0],[\"toolGoalKept\",0],[\"toolGoalTotal\",0],[\"toolKept\",16],[\"toolMutationKept\",0],[\"toolMutationOmitted\",0],[\"toolMutationTotal\",0],[\"toolNormal\",16],[\"toolOmitted\",0],[\"toolReadonlyKept\",0],[\"toolReadonlyOmitted\",0],[\"toolReadonlyTotal\",0],[\"toolShort\",0],[\"toolUnknownKept\",16],[\"toolUnknownOmitted\",0],[\"toolUnknownTotal\",16],[\"userExcerpted\",0],[\"userFolded\",0],[\"userFull\",13],[\"userKept\",13],[\"userKeptChars\",2383],[\"userSourceChars\",2383]]",
-      "textSha256": "7eae059fe37e9456af0ce567fb13e663500692b829fefda8540d8ff60af11ad7"
+      "textSha256": "25ee4efeaa3a1ca5cafc88eac3ab0216ea42b1b1c930b3a9784179aa0dcc2720"
     },
     {
       "id": "random-1139",
@@ -2148,10 +2149,10 @@
       "id": "random-1196",
       "shape": "hash",
       "kind": "ok",
-      "usedChars": 2734,
+      "usedChars": 2727,
       "reservedChars": 156,
       "counts": "[[\"annotationBlockedRejected\",0],[\"annotationGoalRejected\",0],[\"assistantExcerpted\",0],[\"assistantFolded\",0],[\"assistantFull\",5],[\"assistantKept\",5],[\"assistantKeptChars\",797],[\"assistantSourceChars\",797],[\"budgetChars\",2844],[\"toolBlockedKept\",0],[\"toolBlockedTotal\",0],[\"toolErrorKept\",0],[\"toolErrorOmitted\",0],[\"toolErrorTotal\",0],[\"toolGoalKept\",0],[\"toolGoalTotal\",0],[\"toolKept\",7],[\"toolMutationKept\",0],[\"toolMutationOmitted\",0],[\"toolMutationTotal\",0],[\"toolNormal\",7],[\"toolOmitted\",0],[\"toolReadonlyKept\",0],[\"toolReadonlyOmitted\",0],[\"toolReadonlyTotal\",0],[\"toolShort\",0],[\"toolUnknownKept\",7],[\"toolUnknownOmitted\",0],[\"toolUnknownTotal\",7],[\"userExcerpted\",0],[\"userFolded\",0],[\"userFull\",8],[\"userKept\",8],[\"userKeptChars\",1405],[\"userSourceChars\",1405]]",
-      "textSha256": "4c2fb1fbba5c0eeddc7259829b2ade0ddb4259e6ff3bf1546032d7c373a304c9"
+      "textSha256": "dafed4df310940bb2363f2d341ceae52b28be2bdfa5f77d777e685671240e5af"
     },
     {
       "id": "random-1197",

@@ -401,7 +401,7 @@ describe("new codemode brief candidates", () => {
     expect(renderToolCandidate(tool)).toBe("* Read \"src/a.ts\" (#1)");
   });
 
-  it("uses intent/code navigation without the static name prefix and hides blocked text", () => {
+  it("uses goal/code navigation without the static name prefix and hides blocked text", () => {
     const code = codemodeScript("检查缓存", "await tools.read({ path: \"a\" });", false)
       .replace("// goal: 检查缓存", "// goal: 检查缓存\n// blocked: SECRET_BLOCKER");
     const blocks = normalize([codemodeCall(code)]);
@@ -411,10 +411,10 @@ describe("new codemode brief candidates", () => {
       calls: [nestedCall({ name: "write", arguments: { path: "a" } })],
     })]));
     const [tool] = buildBriefCandidates(blocks);
-    expect(tool.tool!.normalNav).toBe("intent: 检查缓存");
+    expect(tool.tool!.normalNav).toBe("goal: 检查缓存");
     expect(tool.hint?.blocked).toBe("SECRET_BLOCKER");
     expect(tool.sourceText).not.toContain("SECRET_BLOCKER");
-    expect(renderToolCandidate(tool)).toBe("* codemode intent: 检查缓存 (#0)");
+    expect(renderToolCandidate(tool)).toBe("* codemode goal: 检查缓存 (#0)");
     expect(tool.score).toBe(30 + 12 + 4 + 2); // mutation + recency + goal + blocked (last 25%)
   });
 
@@ -469,5 +469,131 @@ describe("new codemode brief candidates", () => {
     expect(rendered).toContain("(#7)");
     expect(rendered).toMatch(/\[omitted \d+ of 404 chars; recall #7\]/);
     expect(rendered).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  });
+});
+describe("H3: text candidates never render an isolated reference", () => {
+  const whitespaceTexts = ["", " ", "\n", "  \t", "\r\n\t", "\u00a0", "\u3000\u2007"];
+
+  it("T05: drops whitespace-only assistant candidates from raw blocks", () => {
+    for (const text of whitespaceTexts) {
+      const candidates = buildBriefCandidates([{ kind: "assistant", text, sourceIndex: 2 }]);
+      expect(candidates).toEqual([]);
+    }
+  });
+
+  it("T05: a whitespace text part does not hide the tool call in its message", () => {
+    const msg = assistantWithToolCall("Read", { path: "src/a.ts" });
+    const blocks = normalize([{
+      ...msg,
+      content: [{ type: "text", text: "\n  \t" }, ...(msg.content as any[])],
+    } as any]);
+    const candidates = buildBriefCandidates(blocks);
+    expect(candidates.filter((c) => c.role === "assistant")).toEqual([]);
+    expect(candidates.map((c) => c.role)).toEqual(["tool"]);
+  });
+
+  it("T06: a leading blank line keeps the ref on the first text line", () => {
+    const candidate = buildBriefCandidates([{ kind: "user", text: "\nVisible text", sourceIndex: 7 }])[0];
+    expect(renderTextCandidate(candidate, candidate.sourceText.length)).toBe("\nVisible text (#7)");
+  });
+
+  it("T06: indentation and trailing line breaks survive the ref", () => {
+    const text = "  indented first line\nsecond line\n";
+    const candidate = buildBriefCandidates([{ kind: "assistant", text, sourceIndex: 3 }])[0];
+    expect(renderTextCandidate(candidate, candidate.sourceText.length)).toBe("  indented first line (#3)\nsecond line\n");
+  });
+
+  it("T06: an excerpted leading blank line still refs its first text line", () => {
+    const text = "\n" + "x".repeat(500) + "TAIL_MARKER";
+    const candidate = buildBriefCandidates([{ kind: "user", text, sourceIndex: 9 }])[0];
+    const rendered = renderTextCandidate(candidate, 80);
+    expect(rendered.split("\n")[0]).toBe("");
+    const firstTextLine = rendered.split("\n").find((line) => line.trim().length > 0)!;
+    expect(firstTextLine).toContain("(#9)");
+    expect(firstTextLine).toMatch(/^x+/);
+  });
+
+  it("T07: a ref already written in the text is kept, with the source ref appended", () => {
+    const candidate = buildBriefCandidates([{ kind: "user", text: "See the old note (#12) for details", sourceIndex: 7 }])[0];
+    expect(renderTextCandidate(candidate, candidate.sourceText.length)).toBe("See the old note (#12) for details (#7)");
+  });
+
+  it("T07: a missing source index adds no ref", () => {
+    const candidate = buildBriefCandidates([{ kind: "user", text: "\nno index here" }])[0];
+    expect(renderTextCandidate(candidate, candidate.sourceText.length)).toBe("\nno index here");
+  });
+
+  it("T08: dropping whitespace candidates keeps the scoring formula on the filtered order", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "user", text: "Fix auth bug", sourceIndex: 0 },
+      { kind: "assistant", text: "\n  \t", sourceIndex: 1 },
+      { kind: "tool_call", name: "Read", args: { path: "src/a.ts" }, toolCallId: "c1", sourceIndex: 2 },
+      { kind: "tool_result", name: "Read", text: "ok", toolCallId: "c1", isError: false, sourceIndex: 3 },
+      { kind: "tool_call", name: "Edit", args: { path: "src/b.ts" }, toolCallId: "c2", sourceIndex: 4 },
+      { kind: "tool_result", name: "Edit", text: "ok", toolCallId: "c2", isError: false, sourceIndex: 5 },
+    ];
+    const candidates = buildBriefCandidates(blocks);
+    // The whitespace block is not a candidate; the two tools now hold r=0.5 and r=1.
+    expect(candidates.map((c) => c.role)).toEqual(["user", "tool", "tool"]);
+    const tools = candidates.filter((c) => c.role === "tool");
+    expect(tools[0].score).toBe(6 + Math.round(12 * 0.5));
+    expect(tools[1].score).toBe(30 + Math.round(12 * 1));
+    // The block list itself is untouched: #N and the budget's block count do not move.
+    expect(blocks).toHaveLength(6);
+    expect(tools.map((c) => c.sourceIndex)).toEqual([2, 4]);
+  });
+});
+describe("H1: the goal label stays on codemode lines", () => {
+  const toolLine = (code: string) => buildBriefCandidates(normalize([codemodeCall(code)]))[0];
+
+  it("T01: a short goal renders as goal: <text>", () => {
+    const tool = toolLine(codemodeScript("Verify the login flow", "return 1;"));
+    expect(tool.tool!.normalNav).toBe("goal: Verify the login flow");
+    expect(renderToolCandidate(tool)).toBe("* codemode goal: Verify the login flow (#0)");
+  });
+
+  it("T01: a long goal keeps the 200-unit body and the 80-unit short line", () => {
+    // The parser accepts values up to 200 units, so 200 is the largest goal
+    // body the line can carry; the short navigation is the 80-unit excerpt.
+    const goal = "g".repeat(200);
+    const tool = toolLine(codemodeScript(goal, "return 1;"));
+    expect(tool.tool!.normalNav).toBe(`goal: ${goal}`);
+    expect(tool.tool!.shortNav).toHaveLength("goal: ".length + 80);
+    expect(tool.tool!.shortNav.endsWith("…")).toBe(true);
+    // Over the parser limit the marker is rejected; no goal line is invented.
+    const over = toolLine(codemodeScript("g".repeat(201), "return 1;"));
+    expect(over.tool!.normalNav.startsWith("code: ")).toBe(true);
+  });
+
+  it("T02: no goal falls back to the code preview, then to the bare tool name", () => {
+    const codeOnly = toolLine("return 1;");
+    expect(renderToolCandidate(codeOnly)).toBe("* codemode code: return 1; (#0)");
+    const bare = buildBriefCandidates(normalize([assistantWithToolCall("codemode", {})]))[0];
+    expect(bare.tool!.normalNav).toBe("");
+    expect(renderToolCandidate(bare)).toBe("* codemode (#0)");
+  });
+
+  it("T03: a goal that starts with code: keeps its label and stays distinct", () => {
+    const withGoal = toolLine(codemodeScript("code: return 1;", "return 1;"));
+    const codeOnly = toolLine("return 1;");
+    expect(renderToolCandidate(withGoal)).toBe("* codemode goal: code: return 1; (#0)");
+    expect(renderToolCandidate(codeOnly)).toBe("* codemode code: return 1; (#0)");
+    // B (an unlabeled goal line) is not used: these two must never coincide.
+    expect(withGoal.tool!.normalNav).not.toBe(codeOnly.tool!.normalNav);
+  });
+
+  it("T04: a goal that claims success never hides an observed error", () => {
+    const blocks = normalize([
+      codemodeCall(codemodeScript("tests passed", "await tools.bash({ command: 'false' });")),
+      codemodeResult({
+        isError: true,
+        text: "Script failed",
+        calls: [nestedCall({ name: "bash", arguments: { command: "false" }, status: "error", error: "exit 1" })],
+      }),
+    ]);
+    const [tool] = buildBriefCandidates(blocks);
+    expect(tool.tool!.observedError).toBe(true);
+    expect(renderToolCandidate(tool)).toContain("goal: tests passed");
+    expect(renderToolCandidate(tool)).toContain("{error observed; result #1}");
   });
 });
