@@ -2,6 +2,19 @@
 
 All notable changes to `pi-vcc-codemode` are documented in this file.
 
+## [0.1.4] - 2026-10-28
+
+### Changed
+
+- **Codemode goal lines keep their label.** The brief renders `* codemode goal: <text> (#N)`; the code fallback stays `* codemode code: <preview> (#N)`, and a call with no goal and no preview is just `* codemode (#N)`. An unlabeled goal line is not used, because a goal whose text begins with `code:` would be indistinguishable from the preview. `HISTORICAL_NOTE` is unchanged.
+
+### Fixed
+
+- **`details.sections` reports rendered header titles, not body text.** The compaction metadata and the debug snapshot now carry the section titles the final summary actually kept. The new codemode path reads them from its dedicated header, so a title clipped by the 20% header cap is not reported and body tags such as `[user]` never appear; the old path returns the names produced by the merge, so a previous `[Commits]` section survives a window with no new commits. A column-0 `[Commits]` line written inside brief text is no longer read as a header.
+- **A whitespace-only assistant text part no longer becomes a brief candidate.** Such a part produced a line containing only ` (#N)`; it is dropped at the candidate layer, so the message keeps its tool calls and no text line. References are now attached to the first non-blank line, so text that starts with a blank line keeps its own formatting and the renderer stops creating an isolated reference line.
+- **A stored limited-history note is stripped like the other notes.** `history limited by edited checkpoint; use recall` stayed in a previous summary and could reappear inside a merged brief when a limited new-path summary was later read by the old path.
+- **`vcc_recall` says which action actually ran.** When a call carries dropped or unused parameters, the `Ignored:` line now ends with `; action: <label>` taken from the final dispatch (hybrid query, recent entries, entry expansion, entry range, file-content lookup, touched files, literal scan, saved-record read, or none for an invalid request). Actions without a reason no longer render empty parentheses, and `mode:"scan"` is dropped with the correction `use scan:true with query for a literal scan`.
+
 ## [0.1.3] - 2026-10-28
 
 ### Added

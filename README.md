@@ -23,7 +23,7 @@ The agent then tends to re-read the same files, re-run the same tests, or repeat
 
 | After compaction | Upstream pi-vcc | pi-vcc-codemode |
 |---|---|---|
-| codemode call in the brief | `* codemode` | `* codemode intent: Verify the login flow (#42)` |
+| codemode call in the brief | `* codemode` | `* codemode goal: Verify the login flow (#42)` |
 | codemode call in recall | `codemode(code)` | a bounded script preview, 300 chars in the list and 1,500 chars in expand |
 | nested calls | not rendered; only the result text is visible | one line for the last 12 calls (32 in expand), with name, arguments, status, error and duration |
 | failed script | the visible error | the same error plus the nested calls that succeeded before it |
@@ -47,10 +47,10 @@ text(result.output);
 The compact brief keeps a historical navigation line:
 
 ```
-* codemode intent: Find why login fails after a password reset (#42)
+* codemode goal: Find why login fails after a password reset (#42)
 ```
 
-The line records what the script was trying to do, not proof that it succeeded. The declared tool names are no longer repeated in the brief; the nested-call record and recall still show what ran.
+The line records what the script was trying to do, not proof that it succeeded. The declared tool names are no longer repeated in the brief; the nested-call record and recall still show what ran. The `goal:` label stays: an unlabeled goal line is not used, because a goal whose text starts with `code:` would then be indistinguishable from the code preview. Without a goal the line is `* codemode code: <preview> (#N)`, and with no goal or preview it is just `* codemode (#N)`.
 
 Recall keeps a script preview, and the tool result keeps what actually ran:
 
@@ -74,7 +74,7 @@ The intent is read from the opening `//` comment block, at most three lines. `//
 // blocked: <reserved signal; no prompt asks for it>
 ```
 
-The markers are matched case-insensitively and tolerate whitespace (`//goal:`, `// GOAL :`). The parser stops at the first non-empty, non-comment line, so comments in the body are not scanned. `// goal:` is shown as `intent:`, capped at 200 chars; without it the brief falls back to a `code:` preview of at most 80 chars. `// blocked:` is never rendered and never enters `[Outstanding Context]`; it can only add a small score when the event is in the recent quarter, and repeated markers do not accumulate. No prompt guideline asks for `// blocked:`: it is a reserved signal that only scores when a script happens to carry one, so a session where it never appears is the expected case. Neither marker is proof of success or current state.
+The markers are matched case-insensitively and tolerate whitespace (`//goal:`, `// GOAL :`). The parser stops at the first non-empty, non-comment line, so comments in the body are not scanned. `// goal:` is shown as `goal:`, capped at 200 chars; without it the brief falls back to a `code:` preview of at most 80 chars. `// blocked:` is never rendered and never enters `[Outstanding Context]`; it can only add a small score when the event is in the recent quarter, and repeated markers do not accumulate. No prompt guideline asks for `// blocked:`: it is a reserved signal that only scores when a script happens to carry one, so a session where it never appears is the expected case. Neither marker is proof of success or current state.
 
 The guideline asks the model to write the goal in the same language as the user's request and to describe intent, not success. Model compliance is not guaranteed. If the marker is missing, the script still compacts and renders through the code-preview fallback.
 
@@ -126,7 +126,7 @@ On a short session `/pi-vcc` can answer "Nothing to compact yet" whatever `keep:
 
 When codemode is active, the injected prompt rules ask the model to use `vcc_recall` for earlier context when that tool is available, and to start each script with a one-line `// goal: ...` in the user's language.
 
-Compaction then shows that goal as `intent:` instead of the script head; the tools the script names remain in the call record and recall, not in the brief line. A tool result that ran other tools lists the nested calls with their arguments, status, error and duration, so a failed script still records what ran before it. The record is what Pi saved and may be incomplete; summary text is a preview, and the original message stays in the session.
+Compaction then shows that goal as `goal:` instead of the script head; the tools the script names remain in the call record and recall, not in the brief line. A tool result that ran other tools lists the nested calls with their arguments, status, error and duration, so a failed script still records what ran before it. The record is what Pi saved and may be incomplete; summary text is a preview, and the original message stays in the session.
 
 `vcc_recall` also has two explicit actions for the full saved record: `scan:true` searches every saved field literally, including text past the default 2,000-character index, and `read` pages through one record's canonical field view. Both use the same session file and `#N` space; see [Recall](#recall).
 
@@ -232,7 +232,7 @@ vcc_recall({ read: { index: 41, offset: 0, length: 4000 } })  // page one record
 
 `scan` is a case-insensitive literal substring match (no regex, stemming, fuzzy matching or Unicode normalization). It returns a versioned cursor when partial, never reports a timed-out range as "no matches", and marks malformed records as incomplete coverage. A scan fixes the file bound when it starts, so recall messages appended during the scan are not included. `read` returns `actualStart`, `actualEnd`, `total`, `remaining` and a copyable next call, never splits a grapheme, and names verified `toolCallId`-paired results. Both exclude system messages, thinking/image blocks and the recall tool's own arguments/results.
 
-Each call does one of these. `page` and `scope` work with all of them, and a param the call cannot use is named in the output instead of dropped silently.
+Each call does one of these. `page` and `scope` work with all of them. A param the call cannot use is named in the output instead of dropped silently, together with the action that actually ran — for example `Ignored: mode "scan" (use scan:true with query for a literal scan); action: hybrid query.` The label names the dispatch the parse chose, not a promise that it found anything; an invalid request reports `action: none (invalid request)` and runs no retrieval.
 
 The same search as a slash command, with results shown in the chat and passed to the agent:
 
@@ -278,16 +278,18 @@ Config lives at `pi-vcc-config.json` in Pi's agent directory (`~/.pi/agent`, or 
 - **Pi 1.0 or newer** is required. The fork starts from pi-vcc 0.10.2 and drops the old automatic post-compaction continue fallback: Pi 1.0 resumes the run itself. The marker left in older sessions is still filtered.
 - **Non-codemode sessions are unchanged.** Rendering, the brief, search, cut selection and settings match upstream; golden tests pin the upstream output.
 - **Non-codemode briefs keep the upstream 8-line/120-line path.** That cap and the 1,000-character codemode-line restoration are unchanged for sessions without codemode records; direct tool lines keep upstream's kept set, and the default query return text is unchanged.
-- **Codemode briefs are historical navigation with real character budgets.** User/assistant text and `intent:` are past statements, not current state or proof of success; tool names describe calls or script structure. The body follows effective edits and can differ from the saved original; `#N` points at the saved original, and `scan`/`read` read that original. Text has independent user/assistant budgets (initially 40/30/30 with tools), long text gets head/tail excerpts, and only when minimum excerpts do not fit is the oldest continuous range folded. There is no fixed 16-user or 80-block cap, and codemode lines are no longer re-cut by the old 8-line/1,000-character rule.
+- **Codemode briefs are historical navigation with real character budgets.** User/assistant text and `goal:` lines are past statements, not current state or proof of success; tool names describe calls or script structure. The body follows effective edits and can differ from the saved original; `#N` points at the saved original, and `scan`/`read` read that original. Text has independent user/assistant budgets (initially 40/30/30 with tools), long text gets head/tail excerpts, and only when minimum excerpts do not fit is the oldest continuous range folded. There is no fixed 16-user or 80-block cap, and codemode lines are no longer re-cut by the old 8-line/1,000-character rule.
 - **Long sessions reach the effective budget ceiling earlier.** `historyBlockCount` now counts the whole effective history, not just the current window, so repeated compaction pushes the 15-per-block estimate to the 2,000-token ceiling sooner. This raises the effective character budget for long sessions; it is a behavior change, not a new setting, and the final body still stays within the effective budget.
 - **Script previews in `expand` are head-only.** Recall shows 300 chars in the list and 1,500 in expand, and long nested arguments stay clipped. Use `read` for the complete saved fields of one record, or `scan` to find text that the default query's 2,000-character index did not cover.
 - **`scan` and `read` have their own bounds.** `scan` returns 20 messages and at most 8,000 characters per page, checks a soft 3-second budget between complete records, and reports only one snippet per message (the first match); continue with the cursor to enumerate the rest. `read` defaults to 4,000 UTF-16 units per page and caps a request at 12,000; a single pathological grapheme larger than that cannot be paged past, and the output says so explicitly rather than returning an empty page.
 - **Default search and nested rendering remain bounded.** The list shows the last 12 calls, expand shows the last 32, and default search indexes the first 2,000 chars of a record. Pi may also save an incomplete nested record; the output marks it as `[record incomplete]`. `scan`/`read` cover what was saved, not data Pi never wrote.
 - **`mode:'touched'` lists files written or edited from codemode scripts**, except calls whose arguments Pi dropped for size (over 8 KB per call or 32 KB per script); the output says how many were dropped. Files written through `apply_patch` (paths inside the diff) or bash redirects remain invisible.
-- **The `intent:` text is a declaration.** It is read from the opening comment block, not from execution; a tool name in the source is not proof that the call ran. The nested record is the execution evidence; `// blocked:` is only a bounded recency signal and is not rendered.
+- **The `goal:` text is a declaration.** It is read from the opening comment block, not from execution; it is not proof of success, completion or current state, and a tool name in the source is not proof that the call ran. The nested record is the execution evidence; `// blocked:` is only a bounded recency signal and is not rendered.
 - **No codemode store projection.** `scan` and `read` are explicit new recall parameters; the default query, expand, range and touched behavior are unchanged.
 
 ## Verification
+
+The 0.1.4 release passes 900 tests across 49 files and `bun run typecheck` on Pi 1.4.0 (locked) and on Pi 1.0.0 (installed and verified, then restored). A production-hook replay of 97 local sessions (76 without codemode, 21 with) against the 0.1.3 build on the same snapshots found: the 70 non-codemode summaries were byte-identical; the 21 codemode summaries stayed within budget with no unresolvable `#N` and exactly one reading note; sessions whose `details.sections` carried body tags fell from 21 to 0 (and from 70 to 0 on the non-codemode path); and lines containing only `(#N)` fell from 16 sessions / 58 lines to 1 session / 1 line, the remaining one being a 120-column wrap boundary that 0.1.3 also had. Nine `read` calls, three `range` calls and a no-match `scan`/query on three codemode sessions returned byte-identical recall output in both builds. These are aggregates only; no session text or paths are recorded. The 242-case allocator golden stays frozen: three records built from an empty-text candidate were re-measured for the new reference placement and are marked in the fixture.
 
 The 0.1.3 release passes 867 tests across 49 files and `bun run typecheck` on Pi 1.4.0 (locked); the suite also runs on a temporary Pi 1.0.0 copy. A fork of a real 264-message session was compacted three times with the pre-fix build and three times with 0.1.3 under `-p`: the six summaries were byte-identical (sha256 prefix `383f39c90e2c`, 5,570 chars) and 0.1.3 was 7-15% faster end to end (1,064-1,129 ms versus 1,157-1,317 ms, including a 307 ms process baseline). The offline audit of 15 local codemode sessions found 0 over-budget briefs, 0 note violations and 0 unmarked header omissions (aggregates only); it is not a task-outcome experiment. The production brief seam was also run on a copy of the development session (189 entries, 174 codemode messages): keep:1 used 7,928 of 8,000 chars with one note and no over-budget or header truncation; `scan` completed a 10-page/182-hit query; the longest hit was read in 11 pages with exact reassembly. This is one session's behavior check, not a task-outcome experiment.
 
