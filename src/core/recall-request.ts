@@ -129,7 +129,11 @@ export const normalizeToolParams = (raw: unknown): Record<string, unknown> => {
     delete p.mode;
   }
   if (p.scope !== undefined && p.scope !== "lineage" && p.scope !== "all") drop("scope", "use 'lineage' or 'all'");
-  if (p.mode !== undefined && p.mode !== "hybrid" && p.mode !== "touched") drop("mode", "use 'touched' or leave it out");
+  if (p.mode !== undefined && p.mode !== "hybrid" && p.mode !== "touched") {
+    drop("mode", p.mode === "scan"
+      ? "use scan:true with query for a literal scan"
+      : "use 'touched' or leave it out");
+  }
   if (p.query !== undefined && typeof p.query !== "string") drop("query", "not text");
 
   if (p.scan !== undefined) {

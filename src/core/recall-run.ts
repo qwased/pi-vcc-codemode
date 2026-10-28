@@ -164,12 +164,33 @@ const IGNORED_REASON: Record<RecallRequest["action"]["kind"], string> = {
   invalid: "",
 };
 
-/** One line naming params the action did not use, so nothing is dropped silently. */
-export const ignoredNote = (request: RecallRequest): string =>
-  (request.dropped?.length ? `Ignored: ${request.dropped.join(", ")}.\n\n` : "") +
-  (request.ignored?.length
-    ? `Ignored: ${request.ignored.join(", ")} (${IGNORED_REASON[request.action.kind]}).\n\n`
-    : "");
+/**
+ * The path the parse actually chose, not the params the caller typed: a
+ * `mode:"scan"` value is dropped and the call still runs as a hybrid query.
+ * The label names the action; it does not claim the action found anything.
+ */
+const ACTION_LABEL: Record<RecallRequest["action"]["kind"], string> = {
+  drill: "file-content lookup",
+  touched: "touched files",
+  expand: "entry expansion",
+  range: "entry range",
+  search: "hybrid query",
+  recent: "recent entries",
+  scan: "literal scan",
+  read: "saved-record read",
+  invalid: "none (invalid request)",
+};
+
+/** One line naming unused or dropped params and the action that ran, so nothing is silent. */
+export const ignoredNote = (request: RecallRequest): string => {
+  const items = [...(request.dropped ?? [])];
+  if (request.ignored?.length) {
+    const reason = IGNORED_REASON[request.action.kind];
+    items.push(`${request.ignored.join(", ")}${reason ? ` (${reason})` : ""}`);
+  }
+  if (items.length === 0) return "";
+  return `Ignored: ${items.join("; ")}; action: ${ACTION_LABEL[request.action.kind]}.\n\n`;
+};
 
 export const runRecall = (request: RecallRequest, view: RecallView, hints: RecallPagingHints): string =>
   ignoredNote(request) + runAction(request, view, hints);

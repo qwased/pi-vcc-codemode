@@ -15,7 +15,7 @@ describe("parseToolRequest", () => {
   it("names the query dropped by expand", () => {
     const r = parseToolRequest({ query: "auth", expand: [4], page: 2 });
     expect(r.action).toEqual({ kind: "expand", indices: [4] });
-    expect(ignoredNote(r)).toBe("Ignored: query, page (expand runs alone; send the rest in a separate call).\n\n");
+    expect(ignoredNote(r)).toBe("Ignored: query, page (expand runs alone; send the rest in a separate call); action: entry expansion.\n\n");
   });
 
   it("keeps page for range and names the query", () => {
@@ -33,7 +33,7 @@ describe("parseToolRequest", () => {
   it("names page without anything to page", () => {
     const r = parseToolRequest({ page: 3 });
     expect(r.action.kind).toBe("recent");
-    expect(ignoredNote(r)).toBe("Ignored: page (page applies to query or range results).\n\n");
+    expect(ignoredNote(r)).toBe("Ignored: page (page applies to query or range results); action: recent entries.\n\n");
   });
 });
 
@@ -69,7 +69,8 @@ describe("normalizeToolParams", () => {
       ],
     });
     const r = parseToolRequest(p);
-    expect(ignoredNote(r).startsWith("Ignored: limit 20 (not a vcc_recall param), page 0")).toBe(true);
+    expect(ignoredNote(r).startsWith("Ignored: limit 20 (not a vcc_recall param); page 0")).toBe(true);
+    expect(ignoredNote(r)).toContain("; action: hybrid query.");
   });
 
   it("leaves well-formed params untouched", () => {
@@ -191,5 +192,74 @@ describe("scan/read command syntax", () => {
       scope: "lineage",
       action: { kind: "search", query: "read the scan output", page: 1 },
     });
+  });
+});
+describe("ignored note names the action that actually ran (H8)", () => {
+  const run = (raw: Record<string, unknown>) => {
+    const request = parseToolRequest(normalizeToolParams(raw));
+    return { request, note: ignoredNote(request) };
+  };
+
+  it("T17: mode scan is judged by the final action, not the typed value", () => {
+    const withQuery = run({ mode: "scan", query: "q" });
+    expect(withQuery.request.action.kind).toBe("search");
+    expect(withQuery.note).toBe('Ignored: mode "scan" (use scan:true with query for a literal scan); action: hybrid query.\n\n');
+
+    const noQuery = run({ mode: "scan" });
+    expect(noQuery.request.action.kind).toBe("recent");
+    expect(noQuery.note).toBe('Ignored: mode "scan" (use scan:true with query for a literal scan); action: recent entries.\n\n');
+
+    const withCursor = run({ mode: "scan", cursor: "abc", query: "q" });
+    expect(withCursor.request.action.kind).toBe("invalid");
+    expect(withCursor.note).toBe('Ignored: mode "scan" (use scan:true with query for a literal scan); action: none (invalid request).\n\n');
+
+    // The correction the note suggests is a real dispatch path.
+    const withScan = run({ mode: "scan", scan: true, query: "q" });
+    expect(withScan.request.action).toEqual({ kind: "scan", query: "q", cursor: undefined });
+    expect(withScan.note).toBe('Ignored: mode "scan" (use scan:true with query for a literal scan); action: literal scan.\n\n');
+  });
+
+  it("T18: drill, touched, expand, range, scan and read name their own action", () => {
+    const drill = run({ query: "#3:src/a.ts", page: 2 });
+    expect(drill.request.action.kind).toBe("drill");
+    expect(drill.note).toBe("Ignored: page (a #N:path query runs alone); action: file-content lookup.\n\n");
+
+    const touched = run({ mode: "touched", query: "x" });
+    expect(touched.request.action.kind).toBe("touched");
+    expect(touched.note).toBe("Ignored: query (mode:'touched' runs alone); action: touched files.\n\n");
+
+    const expand = run({ expand: [1], query: "x" });
+    expect(expand.request.action.kind).toBe("expand");
+    expect(expand.note).toBe("Ignored: query (expand runs alone; send the rest in a separate call); action: entry expansion.\n\n");
+
+    const range = run({ range: [1, 2], query: "x" });
+    expect(range.request.action.kind).toBe("range");
+    expect(range.note).toBe("Ignored: query (range runs alone; send the rest in a separate call); action: entry range.\n\n");
+
+    const scan = run({ query: "q", scan: true, limit: 5 });
+    expect(scan.request.action.kind).toBe("scan");
+    expect(scan.note).toBe("Ignored: limit 5 (not a vcc_recall param); action: literal scan.\n\n");
+
+    const read = run({ read: 41, limit: 5 });
+    expect(read.request.action.kind).toBe("read");
+    expect(read.note).toBe("Ignored: limit 5 (not a vcc_recall param); action: saved-record read.\n\n");
+
+    // A read with extra params fails before running: no action label is invented.
+    const readConflict = run({ read: 41, query: "x" });
+    expect(readConflict.request.action.kind).toBe("invalid");
+    expect(readConflict.note).toBe("");
+  });
+
+  it("T19: dropped-only, ignored-only, both and neither", () => {
+    const droppedOnly = run({ query: "x", limit: 20 });
+    expect(droppedOnly.note).toBe("Ignored: limit 20 (not a vcc_recall param); action: hybrid query.\n\n");
+
+    const ignoredOnly = run({ expand: [1], query: "x" });
+    expect(ignoredOnly.note).toBe("Ignored: query (expand runs alone; send the rest in a separate call); action: entry expansion.\n\n");
+
+    const both = run({ query: "x", limit: 20, expand: [4], page: 2 });
+    expect(both.note).toBe("Ignored: limit 20 (not a vcc_recall param); query, page (expand runs alone; send the rest in a separate call); action: entry expansion.\n\n");
+
+    expect(run({ query: "auth" }).note).toBe("");
   });
 });
