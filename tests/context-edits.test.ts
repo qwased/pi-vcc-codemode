@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { applyTailBudget, buildOwnCut, registerBeforeCompactHook } from "../src/hooks/before-compact";
+import { compile } from "../src/core/summarize";
 import { buildGlobalIndexById } from "../src/core/global-indices";
 import { HISTORICAL_NOTE, LIMITED_HISTORY_NOTE, wrapLongLines } from "../src/core/format";
 import { assistantText, userMsg } from "./fixtures";
@@ -326,11 +327,19 @@ describe.skipIf(typeof (piCore as any).buildSessionProjection !== "function")("c
     expect(result.details.briefHistoryMessageCount).toBe(4);
     expect(result.summary).toContain(wrapLongLines(`${HISTORICAL_NOTE}\n${LIMITED_HISTORY_NOTE}`));
     expect(result.summary).toContain("AFTER_CHECKPOINT_TASK (#2)");
-    expect(result.summary).toContain("intent: after write (#3)");
+    expect(result.summary).toContain("goal: after write (#3)");
     expect(result.summary).not.toContain("BEFORE_CHECKPOINT_TASK");
     // Files come from the effective history, never from the edited prefix.
     expect(result.summary).toContain("src/after.ts");
     expect(result.summary).not.toContain("Before checkpoint work.");
+
+    // T22: reusing this limited summary on the old path must not keep the note.
+    const reused = compile({
+      messages: [userMsg("plain next"), assistantText("plain answer")],
+      previousSummary: result.summary,
+    });
+    expect(reused).not.toContain("history limited by edited checkpoint");
+    expect(reused.split("Historical navigation, not current state")).toHaveLength(1);
   });
 
   test("T26: codemode removed by edits never falls back to the old merge", () => {
@@ -374,6 +383,6 @@ describe.skipIf(typeof (piCore as any).buildSessionProjection !== "function")("c
     expect(result.firstKeptEntryId).toBe("");
     expect(result.summary).toContain("FIRST_ASSISTANT_FACT (#0)");
     expect(result.summary).toContain("LATEST_ASSISTANT_FACT (#3)");
-    expect(result.summary).toContain("intent: inspect");
+    expect(result.summary).toContain("goal: inspect");
   });
 });

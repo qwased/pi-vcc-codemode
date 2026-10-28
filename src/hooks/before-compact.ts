@@ -4,7 +4,7 @@ import * as piCore from "@earendil-works/pi-coding-agent";
 import { writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { compileRanked } from "../core/summarize";
+import { compileRankedWithDetail } from "../core/summarize";
 import { normalize } from "../core/normalize";
 import { buildGlobalIndexById, loadGlobalIndexById } from "../core/global-indices";
 import { buildBriefHistory, briefHistoryHasCodemode } from "../core/brief-history";
@@ -793,7 +793,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       modifiedFileOps = [...new Set([...historyNested.written, ...historyNested.edited])];
     }
 
-    const summary = compileRanked({
+    const { summary, detail } = compileRankedWithDetail({
       messages,
       sourceIndices,
       previousSummary: preparation.previousSummary,
@@ -859,7 +859,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       },
       summaryLength: summary.length,
       summaryPreview: summary.slice(0, 500),
-      sections: [...summary.matchAll(/^\[(.+?)\]/gm)].map((m) => m[1]),
+      sections: detail.headerNames,
     });
 
     const details: PiVccCompactionDetails = {
@@ -867,7 +867,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       // version 2 = refs are session-global (recall index space); version 1
       // summaries carried window-relative refs (issue #28).
       version: 2,
-      sections: [...summary.matchAll(/^\[(.+?)\]/gm)].map((m) => m[1]),
+      sections: detail.headerNames,
       sourceMessageCount: agentMessages.length,
       // Edited history never inherits previous headers, so say so.
       previousSummaryUsed: historyBriefActive && briefHistory.hasContextEdits

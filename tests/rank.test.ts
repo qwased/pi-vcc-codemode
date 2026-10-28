@@ -366,6 +366,8 @@ describe("new codemode brief allocation", () => {
       "which may differ. Session Goal is a condensed excerpt; recall the original for constraints. " +
       "Use vcc_recall: scan searches saved fields; read pages through long records.",
     );
+    // H2 is not adopted: the shipped note text and its 395 units stay unchanged.
+    expect(HISTORICAL_NOTE).toHaveLength(395);
     const blocks: NormalizedBlock[] = [
       { kind: "user", text: "fix the bug", sourceIndex: 0 },
       { kind: "assistant", text: "looking into it", sourceIndex: 1 },

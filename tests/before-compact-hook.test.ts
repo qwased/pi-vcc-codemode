@@ -3,6 +3,7 @@ import { existsSync, unlinkSync, writeFileSync, readFileSync, mkdtempSync, rmSyn
 import { tmpdir } from "os";
 import { join } from "path";
 import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, formatCompactionStats, buildOwnCut, applyTailBudget, DEBUG_SNAPSHOT_PATH } from "../src/hooks/before-compact";
+import { codemodeCall, codemodeResult, codemodeScript, nestedCall } from "./codemode-fixtures";
 
 let tmpDir: string;
 let CONFIG_PATH: string;
@@ -1028,5 +1029,56 @@ describe("registerBeforeCompactHook: trackCommands", () => {
   test("listed commands appear in [Tracked Commands]; no section by default", () => {
     expect(summaryWith({ trackCommands: ["docker"] })).toContain("[Tracked Commands]\n- docker: docker ps -a 2>&1");
     expect(summaryWith({})).not.toContain("[Tracked Commands]");
+  });
+});
+describe("details.sections reports only rendered header titles (P3)", () => {
+  beforeEach(() => {
+    if (existsSync(DEBUG_PATH)) unlinkSync(DEBUG_PATH);
+  });
+  afterEach(() => {
+    if (existsSync(CONFIG_PATH)) unlinkSync(CONFIG_PATH);
+    if (existsSync(DEBUG_PATH)) unlinkSync(DEBUG_PATH);
+  });
+
+  test("legacy path: header titles only, never the brief body tags", () => {
+    setConfig({ debug: true, overrideDefaultCompaction: false });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [
+      msg("u1", "user", "Fix the login bug"),
+      msg("a1", "assistant", "Looking into the auth module."),
+      msg("u2", "user", "Read the auth file"),
+      { id: "a2", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "t-1", name: "Read", arguments: { path: "src/auth.ts" } }] } },
+    ];
+    const result = invokeBefore(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION + " keep:0"));
+    expect(result.compaction).toBeDefined();
+    expect(result.compaction.details.sections).toEqual(["Session Goal", "Files And Changes"]);
+    expect(result.compaction.details.sections).not.toContain("user");
+    expect(result.compaction.details.sections).not.toContain("assistant");
+    // The persisted metadata and the debug snapshot share one source.
+    const snapshot = JSON.parse(readFileSync(DEBUG_PATH, "utf-8"));
+    expect(snapshot.sections).toEqual(["Session Goal", "Files And Changes"]);
+  });
+
+  test("new codemode path: titles come from the dedicated header, not the body", () => {
+    setConfig({ debug: true, overrideDefaultCompaction: false });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [
+      msg("u1", "user", "Investigate the auth flow"),
+      { id: "c1", type: "message", message: codemodeCall(codemodeScript("write auth module", "await tools.write({ path: 'src/auth.ts', content: 'x' });")) },
+      { id: "r1", type: "message", message: codemodeResult({ calls: [nestedCall({ name: "write", arguments: { path: "src/auth.ts" } })] }) },
+      msg("a1", "assistant", "Auth written."),
+    ];
+    const result = invokeBefore(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION + " keep:0"));
+    expect(result.compaction).toBeDefined();
+    const sections = result.compaction.details.sections;
+    expect(sections).toEqual(["Session Goal", "Files And Changes"]);
+    expect(sections).not.toContain("user");
+    expect(sections).not.toContain("assistant");
+    // The body does render the role tags; they must not leak into metadata.
+    expect(result.compaction.summary).toContain("[assistant]");
+    const snapshot = JSON.parse(readFileSync(DEBUG_PATH, "utf-8"));
+    expect(snapshot.sections).toEqual(sections);
   });
 });

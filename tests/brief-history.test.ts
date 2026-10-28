@@ -8,7 +8,7 @@ import { compile, compileRanked, compileRankedWithDetail } from "../src/core/sum
 import { buildGlobalIndexById } from "../src/core/global-indices";
 import { normalize } from "../src/core/normalize";
 import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION } from "../src/hooks/before-compact";
-import { HISTORICAL_NOTE, LEGACY_HISTORICAL_NOTE, LIMITED_HISTORY_NOTE, RECALL_NOTE, wrapLongLines } from "../src/core/format";
+import { HEADER_NAMES, HISTORICAL_NOTE, LEGACY_HISTORICAL_NOTE, LIMITED_HISTORY_NOTE, RECALL_NOTE, wrapLongLines } from "../src/core/format";
 import { assistantText, assistantWithToolCall, toolResult, userMsg } from "./fixtures";
 import { codemodeCall, codemodeResult, codemodeScript, nestedCall } from "./codemode-fixtures";
 
@@ -218,7 +218,7 @@ describe("compileRanked: codemode history gating", () => {
       briefBudgetChars: budgetFor(history),
     });
     expect(summary).toContain(WRAPPED_HISTORICAL_NOTE);
-    expect(summary).toContain("* codemode intent: read auth module (#1)");
+    expect(summary).toContain("* codemode goal: read auth module (#1)");
     expect(summary).not.toContain("Do not redo work already completed.");
   });
 
@@ -317,7 +317,7 @@ describe.skipIf(!projectAvailable)("compileRanked: edited history", () => {
     expect(summary).toContain(LIMITED_HISTORY_NOTE);
     expect(summary.split(LIMITED_HISTORY_NOTE)).toHaveLength(2); // exactly once
     expect(summary).toContain("New task (#4)");
-    expect(summary).toContain("* codemode intent: new work (#5)");
+    expect(summary).toContain("* codemode goal: new work (#5)");
     expect(summary).not.toContain("BEFORE_CHECKPOINT_TASK");
     expect(summary).not.toContain("src/old.ts");
   });
@@ -372,7 +372,7 @@ describe("compileRanked: history selection and budgets", () => {
       briefBudgetChars: budget,
     });
     expect(withNode).toBe(plain);
-    expect(plain).toContain("intent: write module");
+    expect(plain).toContain("goal: write module");
   });
 
   test("T14: earlier rounds keep their own #N and are not replaced by newer rounds", () => {
@@ -398,9 +398,9 @@ describe("compileRanked: history selection and budgets", () => {
       briefBudgetChars: budgetFor(history),
     });
     expect(summary).toContain("ROUND_ONE_TASK (#0)");
-    expect(summary).toContain("* codemode intent: round one write (#1)");
+    expect(summary).toContain("* codemode goal: round one write (#1)");
     expect(summary).toContain("ROUND_TWO_TASK (#4)");
-    expect(summary).toContain("* codemode intent: round two write (#5)");
+    expect(summary).toContain("* codemode goal: round two write (#5)");
   });
 
   test("T17: system and custom entries render no fake refs", () => {
@@ -418,7 +418,7 @@ describe("compileRanked: history selection and budgets", () => {
       briefBudgetChars: budgetFor(history),
     });
     expect(summary).toContain("Task (#0)");
-    expect(summary).toContain("* codemode intent: read auth (#2)");
+    expect(summary).toContain("* codemode goal: read auth (#2)");
     expect(summary).not.toContain("SYSTEM_MARKER");
     expect(summary).not.toContain("CUSTOM_MARKER");
   });
@@ -453,8 +453,8 @@ describe("compileRanked: history selection and budgets", () => {
     });
     expect(summary).toContain("OLD_DONE (#3)");
     expect(summary).toContain("NEW_DONE (#7)");
-    expect(summary).toContain("intent: old write");
-    expect(summary).toContain("intent: new write");
+    expect(summary).toContain("goal: old write");
+    expect(summary).toContain("goal: new write");
   });
 
   test("the reading note appears exactly once and the legacy note is gone", () => {
@@ -489,7 +489,7 @@ describe("compileRanked: history selection and budgets", () => {
     expect(summary.length).toBeLessThanOrEqual(budget);
     // The header is capped at 20% of the remaining budget and says what it dropped.
     expect(summary).toContain("header line");
-    expect(summary).toContain("intent: work");
+    expect(summary).toContain("goal: work");
   });
 
   test("a budget that cannot fit a single candidate returns an explicit empty result", () => {
@@ -522,6 +522,264 @@ describe("compileRanked: history selection and budgets", () => {
   });
 });
 
+// ── details.headerNames: the rendered header titles only (P3) ────────────
+
+describe("compileRankedWithDetail: headerNames (P3)", () => {
+  /** Six known sections in a previous summary; fresh has its own session goal. */
+  const previousAllSections = [
+    "[Session Goal]",
+    "- migrate billing",
+    "- keep retry semantics",
+    "[Files And Changes]",
+    "- Modified: src/billing.ts",
+    "[Commits]",
+    "- abc1234 fix billing retry",
+    "[Tracked Commands]",
+    "- ssh: ssh prod-server",
+    "[Outstanding Context]",
+    "- legacy scheduler fails on retries",
+    "[User Preferences]",
+    "- prefers terse answers",
+  ].join("\n");
+
+  const tinyHistory = () => historyFor(chain([
+    entry("u1", userMsg("x")),
+    entry("c1", codemodeCall(codemodeScript("y", "await tools.bash({ command: 'true' });"))),
+    entry("r1", codemodeResult({ calls: [nestedCall({ name: "bash", arguments: { command: "true" } })] })),
+    entry("a1", assistantText("z")),
+  ]));
+
+  test("T09: only actual header titles are reported, never body tags", () => {
+    const entries = chain([
+      entry("u1", userMsg("Investigate authentication")),
+      ...codemodeTurn("cm", "write auth module", "src/auth.ts"),
+      entry("a1", assistantText("Auth written.")),
+      entry("u2", userMsg("[Commits]\n- body line that looks like a section")),
+    ]);
+    const history = historyFor(entries);
+    // The live window is what production summarizes; its blocks feed the
+    // fresh header. The body is rebuilt from the effective history.
+    const { summary, detail } = compileRankedWithDetail({
+      messages: entries.map((e) => e.message),
+      sourceIndices: [0, 1, 2, 3, 4],
+      // The hook passes the nested file operations; they fill [Files And Changes].
+      fileOps: { readFiles: [], modifiedFiles: ["src/auth.ts"] },
+      briefHistory: history,
+      briefBudgetChars: budgetFor(history),
+    });
+    // Session Goal from the user text, Files And Changes from the nested write.
+    expect(detail.headerNames).toEqual(["Session Goal", "Files And Changes"]);
+    // The body's column-0 [Commits] line is text, not a section.
+    expect(summary).toContain("[Commits]");
+    expect(detail.headerNames).not.toContain("Commits");
+    expect(detail.headerNames).not.toContain("user");
+    expect(detail.headerNames).not.toContain("assistant");
+    for (const name of detail.headerNames) expect(HEADER_NAMES).toContain(name as any);
+  });
+
+  test("T10: a trimmed header reports the surviving titles, not the pre-trim list", () => {
+    const history = tinyHistory();
+    const at = (budgetChars: number) => compileRankedWithDetail({
+      messages: [],
+      sourceIndices: [],
+      previousSummary: previousAllSections,
+      briefHistory: history,
+      briefBudgetChars: budgetChars,
+    });
+
+    // 1,200 chars leaves 20% for the header: three titles fit, the rest are dropped.
+    const partial = at(1200);
+    expect(partial.detail.headerNames).toEqual(["Session Goal", "Files And Changes", "Commits"]);
+    // The audit list (pre-trim) still knows about all five merged sections,
+    // and Commits is title-only here: listed, but with no body lines.
+    expect(partial.detail.headerSections.map((s) => s.name)).toEqual([
+      "Session Goal", "Files And Changes", "Commits", "Tracked Commands", "User Preferences",
+    ]);
+    // Commits keeps its title but its item was trimmed: the body is gone.
+    expect(partial.summary.slice(partial.summary.indexOf("[Commits]"))).toStartWith("[Commits]\n...(");
+
+    // Too small for even the omission marker: nothing is rendered, nothing listed.
+    const dropped = at(490);
+    expect(dropped.detail.headerChars).toBe(0);
+    expect(dropped.detail.headerNames).toEqual([]);
+  });
+
+  test("T10: a title clipped mid-string is not reported as a section", () => {
+    const history = tinyHistory();
+    const previous = [
+      "[Session Goal]",
+      ...Array.from({ length: 10 }, (_, i) => `- goal item ${i} keeps the legacy cron scheduler path intact`),
+    ].join("\n");
+    const at = (budgetChars: number) => compileRankedWithDetail({
+      messages: [],
+      sourceIndices: [],
+      previousSummary: previous,
+      briefHistory: history,
+      briefBudgetChars: budgetChars,
+    });
+
+    const clipped = at(610);
+    expect(clipped.detail.headerChars).toBeGreaterThan(0);
+    // "[Session Go…" is not a complete title, so it is not a section name.
+    expect(clipped.detail.headerNames).toEqual([]);
+
+    const whole = at(620);
+    expect(whole.detail.headerNames).toEqual(["Session Goal"]);
+  });
+
+  test("T11: a previous Commits section survives a merge with no fresh commits", () => {
+    const { summary, detail } = compileRankedWithDetail({
+      messages: [userMsg("next small task")],
+      previousSummary: "[Commits]\n- deadbee keep this commit\n\n---\n\n[user]\nold",
+    });
+    expect(detail.kind).toBe("legacy");
+    // The fresh window contributes its own goal; the old commits still merge.
+    expect(detail.headerNames).toEqual(["Session Goal", "Commits"]);
+    expect(summary).toContain("- deadbee keep this commit");
+  });
+
+  test("T12: no previous summary reports the fresh header titles", () => {
+    const { summary, detail } = compileRankedWithDetail({
+      messages: [userMsg("Fix login bug"), assistantWithToolCall("Read", { path: "auth.ts" })],
+    });
+    expect(detail.headerNames).toEqual(["Session Goal", "Files And Changes"]);
+    expect(summary).toContain("auth.ts");
+  });
+
+  test("T12: a brief-only or empty input reports no header titles", () => {
+    // A body-only summary: no header section is rendered, so nothing is named.
+    const briefOnly = compileRankedWithDetail({ messages: [assistantText("ok")] });
+    expect(briefOnly.summary).not.toBe("");
+    expect(briefOnly.detail.headerNames).toEqual([]);
+
+    const empty = compileRankedWithDetail({ messages: [] });
+    expect(empty.summary).toBe("");
+    expect(empty.detail.headerNames).toEqual([]);
+  });
+
+  test("T13: a budget that fits nothing returns no summary and no titles", () => {
+    const entries = chain([
+      entry("u1", userMsg("Task")),
+      ...codemodeTurn("cm", "work", "src/a.ts"),
+    ]);
+    const history = historyFor(entries);
+    const { summary, detail } = compileRankedWithDetail({
+      messages: [],
+      sourceIndices: [],
+      briefHistory: history,
+      briefBudgetChars: 10,
+    });
+    expect(summary).toBe("");
+    expect(detail.kind).toBe("budget-too-small");
+    expect(detail.headerNames).toEqual([]);
+  });
+});
+
+describe("F9: section lookup stops at the header region", () => {
+  const bodySectionLine = "[Commits]\n- body line pretending to be a section";
+
+  test("T21: a [Commits] line in the previous brief body is not merged as a header", () => {
+    const previousSummary = [
+      "[Session Goal]",
+      "- old goal",
+      "",
+      "---",
+      "",
+      "[user]",
+      "old brief line",
+      "",
+      bodySectionLine,
+    ].join("\n");
+    const { summary, detail } = compileRankedWithDetail({
+      messages: [userMsg("next task"), assistantText("ok")],
+      previousSummary,
+    });
+    expect(detail.headerNames).toEqual(["Session Goal"]);
+    // The line stays where it was written, and no second copy enters the header.
+    expect(summary.match(/\[Commits\]/g)).toHaveLength(1);
+    expect(summary).toContain("- body line pretending to be a section");
+  });
+
+  test("T21: a [Commits] line inside the fresh brief body is not read as a section", () => {
+    const { summary, detail } = compileRankedWithDetail({
+      messages: [userMsg(bodySectionLine), assistantText("ok")],
+      previousSummary: "[Session Goal]\n- old goal",
+    });
+    expect(detail.headerNames).toEqual(["Session Goal"]);
+    expect(summary.match(/\[Commits\]/g)).toHaveLength(1);
+  });
+
+  test("T21: the new path never inherits a body line as a header title", () => {
+    const entries = chain([
+      entry("u1", userMsg("Investigate the auth flow")),
+      ...codemodeTurn("cm", "read auth module", "src/auth.ts"),
+      entry("u2", userMsg("Latest task")),
+    ]);
+    const history = historyFor(entries, "u2");
+    const previousSummary = [
+      "[Session Goal]",
+      "- old goal",
+      "",
+      "---",
+      "",
+      "[user]",
+      "old brief line",
+      "",
+      bodySectionLine,
+    ].join("\n");
+    const { summary, detail } = compileRankedWithDetail({
+      messages: [],
+      sourceIndices: [],
+      previousSummary,
+      briefHistory: history,
+      briefBudgetChars: budgetFor(history),
+    });
+    expect(detail.headerNames).toEqual(["Session Goal"]);
+    expect(summary).not.toContain("[Commits]");
+  });
+});
+
+describe("T22: the limited-history note is stripped with the other notes", () => {
+  const limitedTail = "[Session Goal]\n- Task\n\n---\n\n[user]\nTask\n\n---\n\n" + wrapLongLines(HISTORICAL_NOTE) + "\n" + LIMITED_HISTORY_NOTE;
+
+  test("a new-path compile drops a stored limited note instead of stacking it", () => {
+    const entries = chain([entry("u1", userMsg("Task")), ...codemodeTurn("cm", "work", "src/a.ts")]);
+    const history = historyFor(entries);
+    const summary = compileRanked({
+      messages: [],
+      sourceIndices: [],
+      previousSummary: limitedTail,
+      briefHistory: history,
+      briefBudgetChars: budgetFor(history),
+    });
+    // This history is not limited, so the suffix must be gone entirely.
+    expect(summary).not.toContain("history limited by edited checkpoint");
+    expect(summary.split("Historical navigation, not current state")).toHaveLength(2);
+  });
+
+  test("the limited note with no historical note is stripped too", () => {
+    const entries = chain([entry("u1", userMsg("Task")), ...codemodeTurn("cm", "work", "src/a.ts")]);
+    const history = historyFor(entries);
+    const previousSummary = "[Session Goal]\n- Task\n\n---\n\n[user]\nTask\n\n---\n\n" + LIMITED_HISTORY_NOTE;
+    const summary = compileRanked({
+      messages: [],
+      sourceIndices: [],
+      previousSummary,
+      briefHistory: history,
+      briefBudgetChars: budgetFor(history),
+    });
+    expect(summary).not.toContain("history limited by edited checkpoint");
+  });
+
+  test("an old-path compile does not keep the limited note in the brief", () => {
+    const summary = compile({
+      messages: [userMsg("next"), assistantText("ok")],
+      previousSummary: limitedTail,
+    });
+    expect(summary).not.toContain("history limited by edited checkpoint");
+    expect(summary.split("Use `vcc_recall` to search")).toHaveLength(2);
+  });
+});
 // ── hook: repeated compactions ────────────────────────────────────────────
 
 describe("hook: repeated compactions rebuild from raw history", () => {
@@ -589,7 +847,7 @@ describe("hook: repeated compactions rebuild from raw history", () => {
 
     for (const summary of summaries) {
       expect(summary).toContain("ROUND_ONE_TASK (#0)");
-      expect(summary).toContain("intent: round one write (#1)");
+      expect(summary).toContain("goal: round one write (#1)");
       // Rebuilt, not re-merged: each round holds exactly one copy.
       expect(summary.split("ROUND_ONE_TASK (#0)")).toHaveLength(2);
       expect(summary).toContain(WRAPPED_HISTORICAL_NOTE);
@@ -630,5 +888,59 @@ describe("new-path budget accounting", () => {
     expect(detail.usedChars + detail.reservedChars).toBeLessThanOrEqual(budget);
     expect(summary.length).toBeLessThanOrEqual(budget);
     expect(summary.split("Historical navigation, not current state")).toHaveLength(2);
+  });
+});
+describe("T14 and the budget release gate", () => {
+  test("T14: a missing boundary fails closed without the limited note", () => {
+    const entries = chain([
+      entry("u1", userMsg("Task")),
+      ...codemodeTurn("cm", "work", "src/a.ts"),
+    ]);
+    const history = historyFor(entries, "ghost");
+    expect(history.limitedReason).toBe("missing-history");
+    const { summary, detail } = compileRankedWithDetail({
+      messages: [],
+      sourceIndices: [],
+      briefHistory: history,
+      briefBudgetChars: budgetFor(history),
+    });
+    // Fail-closed: nothing is rebuilt and no limited note is claimed.
+    expect(summary).toBe("");
+    expect(detail.limited).toBe(false);
+    expect(detail.headerNames).toEqual([]);
+  });
+
+  test("a successful non-empty compile fits its budget at 2, 4 and 6 chars per token", () => {
+    const entries = chain([
+      entry("u0", userMsg("Ship the billing retry fix. I prefer terse answers.")),
+      entry("c1", codemodeCall(codemodeScript("write the queue worker", "await tools.write({ path: 'src/queue.ts', content: 'x' });"))),
+      entry("r1", codemodeResult({ calls: [nestedCall({ name: "write", arguments: { path: "src/queue.ts" } })] })),
+      entry("w1", { role: "assistant", content: [{ type: "text", text: "\n  \t" }] }),
+      // No goal: this call must render through the code preview.
+      entry("n1", codemodeCall("await tools.read({ path: 'src/queue.ts' });")),
+      entry("e1", codemodeCall(codemodeScript("verify the queue worker", "await tools.bash({ command: 'false' });"))),
+      entry("e2", codemodeResult({ text: "Script failed", isError: true, calls: [nestedCall({ name: "bash", arguments: { command: "false" }, status: "error", error: "exit 1" })] })),
+      entry("a1", assistantText("The worker is written; the failure is recorded.")),
+    ]);
+    const history = historyFor(entries);
+    const blocks = normalize(history.messages as any, history.sourceIndices).length;
+    for (const charsPerToken of [2, 4, 6]) {
+      const budget = Math.round(Math.min(2000, Math.max(1100, 15 * blocks)) * charsPerToken);
+      const { summary, detail } = compileRankedWithDetail({
+        messages: [],
+        sourceIndices: [],
+        briefHistory: history,
+        briefBudgetChars: budget,
+      });
+      expect(detail.kind).toBe("ok");
+      expect(summary.length).toBeGreaterThan(0);
+      expect(summary.length).toBeLessThanOrEqual(budget);
+      // The assembled summary charges exactly the body plus the reserved cost.
+      expect(detail.usedChars + detail.reservedChars).toBe(summary.length);
+      expect(detail.usedChars + detail.reservedChars).toBeLessThanOrEqual(budget);
+      // The goal label and the code fallback both survive the budget path.
+      expect(summary).toContain("goal: write the queue worker");
+      expect(summary).toContain("* codemode code: ");
+    }
   });
 });

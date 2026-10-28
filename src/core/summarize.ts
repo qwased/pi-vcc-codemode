@@ -5,7 +5,9 @@ import { filterNoise } from "./filter-noise";
 import { buildSections } from "./build-sections";
 import {
   formatSummary,
+  formatHeaderParts,
   formatHeaderSections,
+  HEADER_NAMES,
   capBrief,
   capItems,
   stripCapMarker,
@@ -75,6 +77,8 @@ export interface BriefPlanDetail {
   headerTruncated: boolean;
   headerOmittedItems: number;
   headerSections: HeaderSectionDetail[];
+  /** Known header titles actually rendered in the final summary, in catalog order. */
+  headerNames: string[];
   limited: boolean;
   counts: Record<string, number>;
 }
@@ -84,25 +88,28 @@ export interface RankedCompileResult {
   detail: BriefPlanDetail;
 }
 
-const HEADER_NAMES = ["Session Goal", "Files And Changes", "Commits", "Tracked Commands", "Outstanding Context", "User Preferences"];
-
 const SEPARATOR = "\n\n---\n\n";
 
-/** Extract a named section from summary text */
+/**
+ * Extract a named section from a summary's header region. The first separator
+ * ends the headers: everything after it is brief transcript, where a column-0
+ * `[Commits]` line is past user/assistant text, not a section title.
+ */
 const sectionOf = (text: string, header: string): string => {
+  const sep = text.indexOf(SEPARATOR);
+  const headerText = sep >= 0 ? text.slice(0, sep) : text;
   const tag = `[${header}]`;
-  const start = text.indexOf(tag);
+  const start = headerText.indexOf(tag);
   if (start < 0) return "";
-  const after = text.slice(start);
-  // Find next section header or separator
-  const nextSection = HEADER_NAMES
-    .filter((h) => h !== header)
-    .map((h) => after.indexOf(`[${h}]`))
-    .filter((n) => n > 0);
-  const nextSep = after.indexOf("\n\n---\n\n");
-  const candidates = [...nextSection, ...(nextSep > 0 ? [nextSep] : [])].sort((a, b) => a - b);
-  const end = candidates[0];
-  return (end ? after.slice(0, end) : after).trim();
+  const after = headerText.slice(start);
+  // The next known header inside this region; 0 is the tag we just matched.
+  let end = -1;
+  for (const other of HEADER_NAMES) {
+    if (other === header) continue;
+    const at = after.indexOf(`[${other}]`);
+    if (at > 0 && (end < 0 || at < end)) end = at;
+  }
+  return (end > 0 ? after.slice(0, end) : after).trim();
 };
 
 /** Extract the brief transcript part (everything after ---) */
@@ -260,8 +267,12 @@ const mergeBriefTranscriptWithFreshBudget = (prev: string, fresh: string): strin
   return prevTail ? `${prevTail}\n\n${fresh}` : fresh;
 };
 
-const mergePrevious = (prev: string, fresh: string, options: { preserveFreshBrief?: boolean } = {}): string => {
-  // Merge header sections
+const mergePrevious = (
+  prev: string,
+  fresh: string,
+  options: { preserveFreshBrief?: boolean } = {},
+): { text: string; headerNames: string[] } => {
+  // Merge header sections, keeping the title of every section that survived.
   const headers = HEADER_NAMES
     .map((header) => {
       const freshSec = sectionOf(fresh, header);
@@ -269,9 +280,9 @@ const mergePrevious = (prev: string, fresh: string, options: { preserveFreshBrie
       // indented continuation lines so the per-section merges, which read
       // only "- " lines, see whole items.
       const prevSec = sectionOf(prev, header).replace(/\n[ \t]+(?=\S)/g, " ");
-      return mergeHeaderSection(header, prevSec, freshSec);
+      return { name: header, text: mergeHeaderSection(header, prevSec, freshSec) };
     })
-    .filter(Boolean);
+    .filter((part) => part.text.length > 0);
 
   // Merge brief transcript
   const prevBrief = briefOf(prev);
@@ -282,13 +293,13 @@ const mergePrevious = (prev: string, fresh: string, options: { preserveFreshBrie
 
   const parts: string[] = [];
   if (headers.length > 0) {
-    parts.push(headers.join("\n\n"));
+    parts.push(headers.map((part) => part.text).join("\n\n"));
   }
   if (mergedBrief) {
     parts.push(options.preserveFreshBrief ? mergedBrief : capBrief(mergedBrief));
   }
 
-  return parts.join(SEPARATOR);
+  return { text: parts.join(SEPARATOR), headerNames: headers.map((part) => part.name) };
 };
 
 /** Header-only variant of mergePrevious for the new codemode path (§8.1). */
@@ -310,7 +321,10 @@ interface CompileWithBriefBlocksOptions {
   preserveFreshBriefOnMerge?: boolean;
 }
 
-const compileWithBriefBlocks = (input: CompileInput, options: CompileWithBriefBlocksOptions = {}): string => {
+const compileWithBriefBlocks = (
+  input: CompileInput,
+  options: CompileWithBriefBlocksOptions = {},
+): RankedCompileResult => {
   const blocks = filterNoise(normalize(input.messages, input.sourceIndices));
   const briefBlocks = options.briefBlocksFor?.(blocks);
   const data = buildSections({ blocks, briefBlocks, fileOps: input.fileOps, trackCommands: input.trackCommands });
@@ -320,9 +334,16 @@ const compileWithBriefBlocks = (input: CompileInput, options: CompileWithBriefBl
   const prev = input.previousSummary
     ? stripKnownNotes(input.previousSummary)
     : undefined;
-  const merged = prev ? mergePrevious(prev, fresh, { preserveFreshBrief: options.preserveFreshBriefOnMerge }) : fresh;
-  if (!merged) return "";
-  return wrapLongLines(merged + SEPARATOR + RECALL_NOTE);
+  const merged = prev
+    ? mergePrevious(prev, fresh, { preserveFreshBrief: options.preserveFreshBriefOnMerge })
+    : { text: fresh, headerNames: formatHeaderParts(data).map((part) => part.name) };
+
+  // An empty result carries no header titles: nothing was rendered.
+  if (!merged.text) return { summary: "", detail: legacyDetail([]) };
+  return {
+    summary: wrapLongLines(merged.text + SEPARATOR + RECALL_NOTE),
+    detail: legacyDetail(merged.headerNames),
+  };
 };
 
 /**
@@ -399,6 +420,8 @@ const compileWithEffectiveHistory = (
 
   const detail: BriefPlanDetail = {
     kind: selection.kind,
+    // Only titles that survived into the dedicated header (never the body).
+    headerNames: selection.kind === "ok" ? HEADER_NAMES.filter((name) => after.has(name)) : [],
     budgetChars: budget,
     usedChars: selection.usedChars,
     reservedChars: selection.reservedChars,
@@ -420,7 +443,7 @@ const compileWithEffectiveHistory = (
   return { summary: wrapLongLines(parts.join(SEPARATOR) + SEPARATOR + note), detail };
 };
 
-const legacyDetail = (): BriefPlanDetail => ({
+const legacyDetail = (headerNames: string[]): BriefPlanDetail => ({
   kind: "legacy",
   budgetChars: 0,
   usedChars: 0,
@@ -430,12 +453,13 @@ const legacyDetail = (): BriefPlanDetail => ({
   headerTruncated: false,
   headerOmittedItems: 0,
   headerSections: [],
+  headerNames,
   limited: false,
   counts: {},
 });
 
 export const compile = (input: CompileInput): string =>
-  compileWithBriefBlocks(input);
+  compileWithBriefBlocks(input).summary;
 
 /**
  * Compile with the same-selection detail the audit reads (§7.4). The summary
@@ -445,7 +469,7 @@ export const compileRankedWithDetail = (input: RankedCompileInput): RankedCompil
   if (input.briefHistory && input.briefBudgetChars != null && briefHistoryHasCodemode(input.briefHistory)) {
     return compileWithEffectiveHistory(input, input.briefHistory, input.briefBudgetChars);
   }
-  const summary = compileWithBriefBlocks(input, {
+  return compileWithBriefBlocks(input, {
     briefBlocksFor: (blocks) => selectRankedBriefBlocks(blocks, {
       ...input.ranking,
       fileOps: input.ranking?.fileOps ?? input.fileOps,
@@ -453,7 +477,6 @@ export const compileRankedWithDetail = (input: RankedCompileInput): RankedCompil
     capFreshBrief: false,
     preserveFreshBriefOnMerge: true,
   });
-  return { summary, detail: legacyDetail() };
 };
 
 export const compileRanked = (input: RankedCompileInput): string =>
@@ -475,6 +498,9 @@ const notePattern = (note: string): RegExp =>
 const RECALL_NOTE_RE = notePattern(RECALL_NOTE);
 const HISTORICAL_NOTE_RE = notePattern(HISTORICAL_NOTE);
 const LEGACY_HISTORICAL_NOTE_RE = notePattern(LEGACY_HISTORICAL_NOTE);
+// LIMITED_HISTORY_NOTE is appended after HISTORICAL_NOTE on a limited new-path
+// summary. It is a suffix of that line, so stripping HISTORICAL first is safe.
+const LIMITED_HISTORY_NOTE_RE = notePattern(LIMITED_HISTORY_NOTE);
 
 /**
  * Remove known notes from a previous summary before merging. The exact match
@@ -488,4 +514,5 @@ const stripKnownNotes = (text: string): string =>
     .replace(HISTORICAL_NOTE_RE, "\n\n")
     .replace(LEGACY_HISTORICAL_NOTE_RE, "\n\n")
     .replace(RECALL_NOTE_RE, "\n\n")
+    .replace(LIMITED_HISTORY_NOTE_RE, "\n\n")
     .trimEnd();

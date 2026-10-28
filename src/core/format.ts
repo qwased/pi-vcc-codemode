@@ -158,16 +158,31 @@ export interface FormatSummaryOptions {
   capBriefTranscript?: boolean;
 }
 
+/**
+ * The header catalog: display title plus the SectionData key behind it. Order
+ * here is the rendered order and the order of HEADER_NAMES.
+ */
+const HEADER_FIELDS = [
+  ["Session Goal", "sessionGoal"],
+  ["Files And Changes", "filesAndChanges"],
+  ["Commits", "commits"],
+  ["Tracked Commands", "trackedCommands"],
+  ["Outstanding Context", "outstandingContext"],
+  ["User Preferences", "userPreferences"],
+] as const;
+
+/** Known header titles in render order; the only names a summary header holds. */
+export const HEADER_NAMES = HEADER_FIELDS.map(([name]) => name);
+
+/** Non-empty header parts with their titles, in catalog order. */
+export const formatHeaderParts = (data: SectionData): { name: string; text: string }[] =>
+  HEADER_FIELDS
+    .map(([name, key]) => ({ name, text: section(name, data[key]) }))
+    .filter((part) => part.text.length > 0);
+
 /** Header sections only, unwrapped (the new codemode path adds its own note). */
 export const formatHeaderSections = (data: SectionData): string =>
-  [
-    section("Session Goal", data.sessionGoal),
-    section("Files And Changes", data.filesAndChanges),
-    section("Commits", data.commits),
-    section("Tracked Commands", data.trackedCommands),
-    section("Outstanding Context", data.outstandingContext),
-    section("User Preferences", data.userPreferences),
-  ].filter(Boolean).join("\n\n");
+  formatHeaderParts(data).map((part) => part.text).join("\n\n");
 
 export const formatSummary = (data: SectionData, options: FormatSummaryOptions = {}): string => {
   const capBriefTranscript = options.capBriefTranscript ?? true;
