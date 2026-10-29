@@ -351,6 +351,16 @@ const result: any = {
     briefLines: [] as number[],
     budgetRatios: [] as number[],
     retentionPairs: [] as Array<{ previous: number; retained: number; ratio: number }>,
+    /** Stored details.briefBudget (0.1.5+); older records stay unknown. */
+    budgetKnown: 0,
+    budgetUnknown: 0,
+    recordedBudgets: [] as Array<{
+      charsPerToken: number;
+      historyBlockCount: number;
+      maxChars: number;
+      usedChars: number;
+      reservedChars: number;
+    }>,
   },
   cut: {
     compared: 0,
@@ -494,6 +504,21 @@ for (const file of listSessionFiles(sessionPath)) {
       result.compactions.budgetRatios.push(
         text.length / (BUDGET_CEILING_TOKENS * cpt),
       );
+      const storedBudget = (compactions[i] as any)?.details?.briefBudget;
+      if (storedBudget && typeof storedBudget === "object") {
+        result.compactions.budgetKnown++;
+        result.compactions.recordedBudgets.push({
+          charsPerToken: Number(storedBudget.charsPerToken),
+          historyBlockCount: Number(storedBudget.historyBlockCount),
+          maxChars: Number(storedBudget.maxChars),
+          usedChars: Number(storedBudget.usedChars),
+          reservedChars: Number(storedBudget.reservedChars),
+        });
+      } else {
+        // Pre-0.1.5 record: the audit reports "budget unknown" instead of
+        // deriving a plausible value that was never stored.
+        result.compactions.budgetUnknown++;
+      }
       if (i > 0) {
         const previousLines = briefLines(compactions[i - 1].summary as string).length;
         const retained = countRetained(compactions[i - 1].summary as string, text);
@@ -609,6 +634,17 @@ for (const file of listSessionFiles(sessionPath)) {
           rebuildMs: Number(rebuildMs.toFixed(2)),
           noteOnce: noteCount === 1,
           counts,
+          // Same numbers the hook persists as details.briefBudget, so a stored
+          // record and this compile can be compared field by field.
+          briefBudget: {
+            charsPerToken: cpt,
+            historyBlockCount: historyBlocks,
+            maxChars: budgetChars,
+            usedChars: detail.usedChars,
+            reservedChars: detail.reservedChars,
+          },
+          metrics: detail.metrics,
+          targets: detail.targets ?? null,
           rates: {
             userFull: ratioOf(counts.userFull ?? 0, counts.userKept ?? 0),
             userExcerpt: ratioOf(counts.userExcerpted ?? 0, counts.userKept ?? 0),
@@ -967,6 +1003,17 @@ const summary = {
     overCeiling: result.compactions.budgetRatios.filter((r: number) => r > 1).length,
     retentionMedian: median(result.compactions.retentionPairs.map((p: any) => p.ratio)),
     retentionPairs: result.compactions.retentionPairs.length,
+    // 0.1.5 recorded budget: only what was actually stored. Records without it
+    // are counted as unknown; nothing is backfilled or inferred.
+    recordedBudget: {
+      known: result.compactions.budgetKnown,
+      unknown: result.compactions.budgetUnknown,
+      medianCharsPerToken: median(result.compactions.recordedBudgets.map((b: any) => b.charsPerToken)),
+      medianHistoryBlocks: median(result.compactions.recordedBudgets.map((b: any) => b.historyBlockCount)),
+      medianMaxChars: median(result.compactions.recordedBudgets.map((b: any) => b.maxChars)),
+      medianUsedChars: median(result.compactions.recordedBudgets.map((b: any) => b.usedChars)),
+      medianReservedChars: median(result.compactions.recordedBudgets.map((b: any) => b.reservedChars)),
+    },
   },
   cut: {
     compared: result.cut.compared,
@@ -978,6 +1025,8 @@ const summary = {
   newBrief: (() => {
     const rows = result.newBrief.perSession as Array<Record<string, any>>;
     const pooled = (field: string): number => rows.reduce((sum, row) => sum + (row.counts?.[field] ?? 0), 0);
+    const pooledMetric = (field: string): number =>
+      rows.reduce((sum, row) => sum + (row.metrics?.[field] ?? 0), 0);
     return {
       sessions: result.newBrief.sessions,
       skippedNoEffectiveCodemode: result.newBrief.skippedNoEffectiveCodemode,
@@ -1014,6 +1063,61 @@ const summary = {
         annotationBlockedRejected: pooled("annotationBlockedRejected"),
         toolGoalTotal: pooled("toolGoalTotal"),
         toolBlockedTotal: pooled("toolBlockedTotal"),
+      },
+      pooledMetrics: {
+        toolResultNavTotal: pooledMetric("toolResultNavTotal"),
+        toolResultNavKept: pooledMetric("toolResultNavKept"),
+        toolErrorResultNavTotal: pooledMetric("toolErrorResultNavTotal"),
+        toolErrorResultNavKept: pooledMetric("toolErrorResultNavKept"),
+        toolDirectTotal: pooledMetric("toolDirectTotal"),
+        toolDirectKept: pooledMetric("toolDirectKept"),
+        toolChannelErrorSelected: pooledMetric("toolChannelErrorSelected"),
+        toolChannelErrorFinal: pooledMetric("toolChannelErrorFinal"),
+        toolChannelErrorDropped: pooledMetric("toolChannelErrorDropped"),
+        toolChannelDirectSelected: pooledMetric("toolChannelDirectSelected"),
+        toolChannelDirectFinal: pooledMetric("toolChannelDirectFinal"),
+        toolChannelDirectDropped: pooledMetric("toolChannelDirectDropped"),
+        toolChannelNormalSelected: pooledMetric("toolChannelNormalSelected"),
+        toolChannelNormalFinal: pooledMetric("toolChannelNormalFinal"),
+        toolChannelNormalDropped: pooledMetric("toolChannelNormalDropped"),
+        /** bashExecution rows are user text, counted apart from the tool quota. */
+        toolBashExecutionKept: pooledMetric("toolBashExecutionKept"),
+      },
+      // H1 depth is a distribution, never a "report retention rate": the target
+      // is a positional proxy (newest long assistant text), not a verified final
+      // report. Numbers only; no message text is read.
+      recentTargetDepth: (() => {
+        const buckets = { folded: 0, under64: 0, at64: 0, to127: 0, to255: 0, at256: 0 };
+        for (const row of rows) {
+          for (const target of (row.targets ?? []) as Array<{ keepChars: number; folded: boolean }>) {
+            if (target.folded || target.keepChars === 0) buckets.folded++;
+            else if (target.keepChars < 64) buckets.under64++;
+            else if (target.keepChars === 64) buckets.at64++;
+            else if (target.keepChars < 128) buckets.to127++;
+            else if (target.keepChars < 256) buckets.to255++;
+            else buckets.at256++;
+          }
+        }
+        return {
+          sessions: rows.filter((row) => (row.metrics?.assistantTargetCount ?? 0) > 0).length,
+          targets: pooledMetric("assistantTargetCount"),
+          folded: pooledMetric("assistantTargetFolded"),
+          keptChars: pooledMetric("assistantTargetKeptChars"),
+          sourceChars: pooledMetric("assistantTargetSourceChars"),
+          deep128: pooledMetric("assistantTargetDeep128"),
+          deep256: pooledMetric("assistantTargetDeep256"),
+          maxKeep: rows.reduce((max, row) => Math.max(max, row.metrics?.assistantTargetMaxKeep ?? 0), 0),
+          buckets,
+        };
+      })(),
+      // The exact budget account of this compile view (cpt and blocks are real
+      // values, not the stored record's). Unused quota is reported as such.
+      budgetAccount: {
+        medianCharsPerToken: median(rows.map((row) => row.briefBudget?.charsPerToken ?? 0)),
+        medianHistoryBlocks: median(rows.map((row) => row.briefBudget?.historyBlockCount ?? 0)),
+        medianMaxChars: median(rows.map((row) => row.briefBudget?.maxChars ?? 0)),
+        medianUsedChars: median(rows.map((row) => row.briefBudget?.usedChars ?? 0)),
+        medianReservedChars: median(rows.map((row) => row.briefBudget?.reservedChars ?? 0)),
       },
     };
   })(),

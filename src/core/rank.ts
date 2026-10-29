@@ -7,12 +7,15 @@ import {
   renderToolCandidate,
   formatTextOmissionMarker,
   renderToolOmissionMarker,
+  formatToolOmissionMarker,
   BRIEF_MIN_TEXT_CHARS,
   BRIEF_TEXT_STEP_CHARS,
   type BriefCandidate,
   type BriefSelection,
 } from "./brief";
 import { wrapLongLines } from "./format";
+import { isCodemodeToolName } from "../codemode/active";
+import { closeUnclosedFences } from "./fences";
 
 export interface BriefRankingOptions {
   /** Maximum normalized blocks used to build the brief transcript. */
@@ -309,7 +312,34 @@ interface TextAllocation {
   marker?: string;
   used: number;
   full: boolean;
+  /** Recent long-text candidates that got a depth boost (assistant only). */
+  targets: BriefCandidate[];
 }
+
+// ── H1: recent long-text depth ───────────────────────────────────────────
+// Fixed positional rule, no keyword weighting: within the newest six
+// non-empty assistant texts, the two newest of at least 256 units may keep up
+// to 256 units instead of the 64-unit minimum. The extra depth is paid from
+// the same assistant quota, so "deeper recent report" can fold older narration.
+export const BRIEF_RECENT_TEXT_WINDOW = 6;
+export const BRIEF_RECENT_LONG_TARGETS = 2;
+export const BRIEF_RECENT_LONG_MIN_CHARS = 256;
+export const BRIEF_RECENT_LONG_MAX_KEEP = 256;
+export const BRIEF_RECENT_LONG_ALLOWANCE_MAX = 384;
+const BRIEF_RECENT_LONG_STEP = 64;
+const BRIEF_RECENT_LONG_ROUNDS = 3;
+
+/** The depth targets for one assistant role: newest first, at most two. */
+export const selectRecentTextTargets = (roleCandidates: BriefCandidate[]): BriefCandidate[] => {
+  if (roleCandidates.length === 0 || roleCandidates[0].role !== "assistant") return [];
+  return roleCandidates
+    .slice(-BRIEF_RECENT_TEXT_WINDOW)
+    .filter((candidate) => candidate.sourceText.length >= BRIEF_RECENT_LONG_MIN_CHARS)
+    .slice(-BRIEF_RECENT_LONG_TARGETS)
+    .reverse();
+};
+
+type ToolChannel = "error" | "direct" | "normal";
 
 interface ToolAllocation {
   selected: Map<string, "short" | "normal">;
@@ -317,6 +347,10 @@ interface ToolAllocation {
   marker?: string;
   used: number;
   full: boolean;
+  /** Channel a row entered by; drives contraction deletion order. */
+  channel: Map<string, ToolChannel>;
+  /** Keys that entered each channel on the first pass (metric denominators). */
+  initial: Record<ToolChannel, string[]>;
 }
 
 // Costs are measured after wrapping: the final body is wrapped, and a
@@ -385,13 +419,39 @@ const allocateTextRole = (
   meter: CostMeter,
 ): TextAllocation => {
   if (roleCandidates.length === 0) {
-    return { keep: new Map(), folded: [], used: 0, full: true };
+    return { keep: new Map(), folded: [], used: 0, full: true, targets: [] };
   }
   const role = roleCandidates[0].role === "user" ? "user" : "assistant";
 
+  // Minimum keep per candidate, fixed BEFORE the first fold so the depth is not
+  // just whatever quota happens to be left at the end. Recomputed on every call
+  // (first pass, borrowing, structure retry) from that call's quota.
+  const minimumKeep = new Map<string, number>();
+  for (const candidate of roleCandidates) {
+    minimumKeep.set(candidate.key, Math.min(candidate.sourceText.length, BRIEF_MIN_TEXT_CHARS));
+  }
+  const targets = selectRecentTextTargets(roleCandidates);
+  if (targets.length > 0) {
+    let allowance = Math.min(BRIEF_RECENT_LONG_ALLOWANCE_MAX, Math.floor(quota / 4));
+    for (let round = 0; round < BRIEF_RECENT_LONG_ROUNDS; round++) {
+      for (const candidate of targets) {
+        const current = minimumKeep.get(candidate.key)!;
+        const next = Math.min(BRIEF_RECENT_LONG_MAX_KEEP, candidate.sourceText.length, current + BRIEF_RECENT_LONG_STEP);
+        if (next <= current) continue;
+        const fullCost = meter.text(candidate, candidate.sourceText.length);
+        const delta = Math.min(fullCost, meter.text(candidate, next))
+          - Math.min(fullCost, meter.text(candidate, current));
+        if (delta <= allowance) {
+          minimumKeep.set(candidate.key, next);
+          allowance -= Math.max(0, delta);
+        }
+      }
+    }
+  }
+
   const entries = roleCandidates.map((candidate) => {
     const length = candidate.sourceText.length;
-    const minKeep = Math.min(length, BRIEF_MIN_TEXT_CHARS);
+    const minKeep = minimumKeep.get(candidate.key)!;
     const minCost = meter.text(candidate, minKeep);
     const fullCost = meter.text(candidate, length);
     const keep = fullCost <= minCost ? length : minKeep;
@@ -487,8 +547,13 @@ const allocateTextRole = (
     ...(marker ? { marker } : {}),
     used,
     full,
+    targets,
   };
 };
+
+/** Contraction priority: lowest score first, ties by ascending order. */
+const byContractionPriority = (a: BriefCandidate, b: BriefCandidate): number =>
+  a.score - b.score || a.order - b.order;
 
 const allocateToolRole = (
   toolCandidates: BriefCandidate[],
@@ -496,33 +561,75 @@ const allocateToolRole = (
   meter: CostMeter,
 ): ToolAllocation => {
   if (toolCandidates.length === 0) {
-    return { selected: new Map(), omitted: [], used: 0, full: true };
+    return {
+      selected: new Map(),
+      omitted: [],
+      used: 0,
+      full: true,
+      channel: new Map(),
+      initial: { error: [], direct: [], normal: [] },
+    };
   }
   const byKey = new Map(toolCandidates.map((candidate) => [candidate.key, candidate]));
   const sorted = [...toolCandidates].sort((a, b) => b.score - a.score || b.order - a.order);
   const selected = new Map<string, "short" | "normal">();
+  const channel = new Map<string, ToolChannel>();
+  const initial: Record<ToolChannel, string[]> = { error: [], direct: [], normal: [] };
+  const take = (candidate: BriefCandidate, ch: ToolChannel): void => {
+    selected.set(candidate.key, "short");
+    channel.set(candidate.key, ch);
+    initial[ch].push(candidate.key);
+  };
   let remaining = quota;
 
-  // A 20% channel for observed errors; unused reserve returns to the pool.
+  // 1. Observed errors keep their own 20% channel (policy unchanged). A row
+  // that enters here keeps the "error" identity even when it is also a recent
+  // direct call, so it is charged and rendered exactly once.
   const errorReserve = Math.floor(quota * 0.2);
   let errorUsed = 0;
   for (const candidate of sorted) {
     if (!candidate.evidence?.observedError) continue;
     const cost = meter.tool(candidate, "short");
     if (errorUsed + cost <= errorReserve && cost <= remaining) {
-      selected.set(candidate.key, "short");
+      take(candidate, "error");
       errorUsed += cost;
       remaining -= cost;
     }
   }
+
+  // 2. Direct-tool channel: the two most recent non-codemode calls get a
+  // bounded share of the tool quota, so a codemode-heavy pool cannot erase the
+  // newest direct read/edit. Unused allowance returns to the pool; rows that
+  // are already selected are not charged again.
+  const directReserve = Math.floor(quota * 0.2);
+  let directUsed = 0;
+  const recentDirect: BriefCandidate[] = [];
+  for (let i = toolCandidates.length - 1; i >= 0 && recentDirect.length < 2; i--) {
+    const candidate = toolCandidates[i];
+    if (isCodemodeToolName(candidate.tool?.name)) continue;
+    recentDirect.push(candidate);
+  }
+  for (const candidate of recentDirect) {
+    if (selected.has(candidate.key)) continue;
+    const cost = meter.tool(candidate, "short");
+    if (directUsed + cost <= directReserve && cost <= remaining) {
+      take(candidate, "direct");
+      directUsed += cost;
+      remaining -= cost;
+    }
+  }
+
+  // 3. The rest of the pool fills by score/recency, still as short rows.
   for (const candidate of sorted) {
     if (selected.has(candidate.key)) continue;
     const cost = meter.tool(candidate, "short");
     if (cost <= remaining) {
-      selected.set(candidate.key, "short");
+      take(candidate, "normal");
       remaining -= cost;
     }
   }
+
+  // 4. Spare quota upgrades rows to their normal navigation.
   for (const candidate of sorted) {
     if (selected.get(candidate.key) !== "short") continue;
     const delta = meter.tool(candidate, "normal") - meter.tool(candidate, "short");
@@ -532,54 +639,134 @@ const allocateToolRole = (
     }
   }
 
-  let omitted = toolCandidates.filter((candidate) => !selected.has(candidate.key));
-  let marker = omitted.length > 0 ? renderToolOmissionMarker(omitted) : "";
-  const usedNow = (): number => {
-    let total = marker ? meter.marker(marker) : 0;
-    for (const [key, version] of selected) total += meter.tool(byKey.get(key)!, version);
-    return total;
+  // 5. Contraction. The omission marker is part of the interface, so an
+  // over-budget result first pays by downgrading normal rows, then by deleting
+  // the lowest-priority row of the lowest-priority layer: generic rows, then
+  // direct-channel rows, then error rows. Nothing is re-selected or
+  // re-upgraded, so the loop is bounded. The marker count/range is maintained
+  // incrementally so a long omission list stays cheap.
+  let omittedCount = 0;
+  let omittedMin = Number.POSITIVE_INFINITY;
+  let omittedMax = Number.NEGATIVE_INFINITY;
+  let omittedAllNumeric = true;
+  const omit = (candidate: BriefCandidate): void => {
+    omittedCount++;
+    const ref = candidate.sourceIndex;
+    if (typeof ref === "number") {
+      if (ref < omittedMin) omittedMin = ref;
+      if (ref > omittedMax) omittedMax = ref;
+    } else {
+      omittedAllNumeric = false;
+    }
   };
-  let used = usedNow();
+  for (const candidate of toolCandidates) {
+    if (!selected.has(candidate.key)) omit(candidate);
+  }
+  const markerFor = (): string =>
+    omittedCount > 0
+      ? formatToolOmissionMarker(omittedCount, omittedAllNumeric ? { min: omittedMin, max: omittedMax } : null)
+      : "";
+  let marker = markerFor();
+  let used = marker ? meter.marker(marker) : 0;
+  for (const [key, version] of selected) used += meter.tool(byKey.get(key)!, version);
 
-  // The omission marker is part of the interface: if it does not fit, drop
-  // lower-score selected tools until it does.
+  // Sorted lazily: contraction is the exception, so the common path must not
+  // pay for an extra sort of every tool candidate.
+  let byPriority: BriefCandidate[] | undefined;
+  const priorityList = (): BriefCandidate[] =>
+    (byPriority ??= [...toolCandidates].sort(byContractionPriority));
+  let downgradeCursor = 0;
+  const layerCursors: Record<ToolChannel, number> = { normal: 0, direct: 0, error: 0 };
+  const nextInLayer = (layer: ToolChannel): BriefCandidate | undefined => {
+    const list = priorityList();
+    for (let i = layerCursors[layer]; i < list.length; i++) {
+      const candidate = list[i];
+      if (!selected.has(candidate.key) || channel.get(candidate.key) !== layer) {
+        layerCursors[layer] = i + 1;
+        continue;
+      }
+      layerCursors[layer] = i;
+      return candidate;
+    }
+    layerCursors[layer] = list.length;
+    return undefined;
+  };
+
   while (used > quota && selected.size > 0) {
-    let dropKey: string | undefined;
-    let dropScore = Infinity;
-    for (const key of selected.keys()) {
-      const candidate = byKey.get(key)!;
-      if (candidate.score < dropScore) {
-        dropScore = candidate.score;
-        dropKey = key;
+    // (a) Downgrade the lowest-priority normal row to short.
+    const priority = priorityList();
+    let downgrade: BriefCandidate | undefined;
+    for (; downgradeCursor < priority.length; downgradeCursor++) {
+      const candidate = priority[downgradeCursor];
+      if (selected.get(candidate.key) === "normal") {
+        downgrade = candidate;
+        break;
       }
     }
-    if (!dropKey) break;
-    selected.delete(dropKey);
-    omitted = toolCandidates.filter((candidate) => !selected.has(candidate.key));
-    marker = omitted.length > 0 ? renderToolOmissionMarker(omitted) : "";
-    used = usedNow();
+    if (downgrade) {
+      selected.set(downgrade.key, "short");
+      downgradeCursor++;
+      used -= meter.tool(downgrade, "normal") - meter.tool(downgrade, "short");
+      continue;
+    }
+    // (b) Delete one row from the lowest layer that still has rows.
+    let drop: BriefCandidate | undefined;
+    for (const layer of ["normal", "direct", "error"] as const) {
+      drop = nextInLayer(layer);
+      if (drop) break;
+    }
+    if (!drop) break;
+    const oldMarkerCost = marker ? meter.marker(marker) : 0;
+    used -= meter.tool(drop, selected.get(drop.key)!);
+    selected.delete(drop.key);
+    omit(drop);
+    marker = markerFor();
+    used += (marker ? meter.marker(marker) : 0) - oldMarkerCost;
   }
+
+  const omitted = toolCandidates.filter((candidate) => !selected.has(candidate.key));
+  marker = omitted.length > 0 ? renderToolOmissionMarker(omitted) : "";
+  used = marker ? meter.marker(marker) : 0;
+  for (const [key, version] of selected) used += meter.tool(byKey.get(key)!, version);
 
   return {
     selected,
     omitted,
     ...(marker ? { marker } : {}),
     used,
+    channel,
+    initial,
     full: omitted.length === 0 && [...selected.values()].every((version) => version === "normal"),
   };
 };
-
 const minOrder = (candidates: BriefCandidate[]): number => {
   let min = Number.POSITIVE_INFINITY;
   for (const candidate of candidates) if (candidate.order < min) min = candidate.order;
   return min;
 };
 
+/** Per-target depth record for the audit (no message text, only numbers). */
+export interface BriefTargetRecord {
+  sourceIndex?: number;
+  /** Units actually kept; 0 when the target was folded away. */
+  keepChars: number;
+  sourceChars: number;
+  folded: boolean;
+  headChars: number;
+  tailChars: number;
+}
+
 const assembleBriefBody = (
   candidates: BriefCandidate[],
   textAllocations: { user: TextAllocation; assistant: TextAllocation },
   tools: ToolAllocation,
-): { text: string; usedChars: number; counts: Record<string, number> } => {
+): {
+  text: string;
+  usedChars: number;
+  counts: Record<string, number>;
+  metrics: Record<string, number>;
+  targets: BriefTargetRecord[];
+} => {
   type Item = { order: number; role: "user" | "assistant"; text: string };
   const items: Item[] = [];
 
@@ -676,10 +863,114 @@ const assembleBriefBody = (
     annotationBlockedRejected += candidate.hintRejected?.blocked ?? 0;
   }
 
-  const text = wrapLongLines(out.join("\n"));
+  // Result-navigation coverage: the denominator is the final candidate set,
+  // the numerator the rows that actually kept their `{result #N}` suffix.
+  // Errors are counted separately; "no error observed" is not called success.
+  let toolResultNavTotal = 0;
+  let toolResultNavKept = 0;
+  let toolErrorResultNavTotal = 0;
+  let toolErrorResultNavKept = 0;
+  // Channel coverage: total candidates, channel entries on the first pass, and
+  // what survived the final contraction. "Selected" never stands in for
+  // "final": a row can enter a channel and still be removed by the budget.
+  let toolDirectTotal = 0;
+  for (const candidate of candidates) {
+    if (candidate.role === "tool" && !isCodemodeToolName(candidate.tool?.name)) toolDirectTotal++;
+  }
+  let toolDirectKept = 0;
+  const channelFinal = { error: 0, direct: 0, normal: 0 } as Record<"error" | "direct" | "normal", number>;
+  for (const key of tools.selected.keys()) {
+    const candidate = byKey.get(key)!;
+    if (!isCodemodeToolName(candidate.tool?.name)) toolDirectKept++;
+    const ch = tools.channel.get(key);
+    if (ch) channelFinal[ch]++;
+  }
+  let toolBashExecutionKept = 0;
+  for (const candidate of candidates) {
+    if (candidate.role !== "user" || !candidate.bash) continue;
+    if (textAllocations.user.keep.has(candidate.key)) toolBashExecutionKept++;
+  }
+
+  // H1 depth: one record per target, measured on the FINAL keep (0 when folded).
+  const targets: BriefTargetRecord[] = [];
+  let assistantTargetKept = 0;
+  let assistantTargetFolded = 0;
+  let assistantTargetKeptChars = 0;
+  let assistantTargetSourceChars = 0;
+  let assistantTargetDeep128 = 0;
+  let assistantTargetDeep256 = 0;
+  let assistantTargetMaxKeep = 0;
+  let assistantTargetMinKeep = Number.POSITIVE_INFINITY;
+  for (const candidate of textAllocations.assistant.targets) {
+    const sourceChars = candidate.sourceText.length;
+    const keepChars = textAllocations.assistant.keep.get(candidate.key) ?? 0;
+    const folded = keepChars === 0;
+    targets.push({
+      ...(candidate.sourceIndex != null ? { sourceIndex: candidate.sourceIndex } : {}),
+      keepChars,
+      sourceChars,
+      folded,
+      headChars: Math.ceil(keepChars / 2),
+      tailChars: Math.floor(keepChars / 2),
+    });
+    assistantTargetSourceChars += sourceChars;
+    if (folded) {
+      assistantTargetFolded++;
+      continue;
+    }
+    assistantTargetKept++;
+    assistantTargetKeptChars += keepChars;
+    if (keepChars >= 128) assistantTargetDeep128++;
+    if (keepChars >= 256) assistantTargetDeep256++;
+    if (keepChars > assistantTargetMaxKeep) assistantTargetMaxKeep = keepChars;
+    if (keepChars < assistantTargetMinKeep) assistantTargetMinKeep = keepChars;
+  }
+  for (const candidate of candidates) {
+    if (candidate.role !== "tool" || candidate.tool?.resultIndex == null) continue;
+    if (candidate.tool.observedError) toolErrorResultNavTotal++;
+    else toolResultNavTotal++;
+  }
+  for (const key of tools.selected.keys()) {
+    const tool = byKey.get(key)!.tool;
+    if (tool?.resultIndex == null) continue;
+    if (tool.observedError) toolErrorResultNavKept++;
+    else toolResultNavKept++;
+  }
+
+  // Invariant guard: never let the body end inside a fence. Every excerpt is
+  // balanced on its own; this catches a join or a wrap that re-opened one.
+  const text = closeUnclosedFences(wrapLongLines(out.join("\n"))).text;
   return {
     text,
     usedChars: text.length,
+    metrics: {
+      toolResultNavTotal,
+      toolResultNavKept,
+      toolErrorResultNavTotal,
+      toolErrorResultNavKept,
+      toolDirectTotal,
+      toolDirectKept,
+      toolChannelErrorSelected: tools.initial.error.length,
+      toolChannelErrorFinal: channelFinal.error,
+      toolChannelErrorDropped: tools.initial.error.length - channelFinal.error,
+      toolChannelDirectSelected: tools.initial.direct.length,
+      toolChannelDirectFinal: channelFinal.direct,
+      toolChannelDirectDropped: tools.initial.direct.length - channelFinal.direct,
+      toolChannelNormalSelected: tools.initial.normal.length,
+      toolChannelNormalFinal: channelFinal.normal,
+      toolChannelNormalDropped: tools.initial.normal.length - channelFinal.normal,
+      toolBashExecutionKept,
+      assistantTargetCount: targets.length,
+      assistantTargetKept,
+      assistantTargetFolded,
+      assistantTargetKeptChars,
+      assistantTargetSourceChars,
+      assistantTargetDeep128,
+      assistantTargetDeep256,
+      assistantTargetMaxKeep,
+      assistantTargetMinKeep: Number.isFinite(assistantTargetMinKeep) ? assistantTargetMinKeep : 0,
+    },
+    targets,
     counts: {
       userKept: textAllocations.user.keep.size,
       userFull: userStats.full,
@@ -800,6 +1091,8 @@ const allocateOnce = (
     usedChars: assembled.usedChars,
     reservedChars: 0,
     counts: { ...assembled.counts, budgetChars: bodyBudget },
+    metrics: assembled.metrics,
+    ...(assembled.targets.length > 0 ? { targets: assembled.targets } : {}),
   };
 };
 

@@ -1,5 +1,6 @@
 import type { SectionData } from "../sections";
 import { graphemeStartAtOrBefore } from "./recall-full";
+import { dropOrphanClosers } from "./fences";
 
 const section = (title: string, items: string[]): string => {
   if (items.length === 0) return "";
@@ -66,7 +67,13 @@ export const capBrief = (text: string): string => {
   // Find first section header to avoid cutting mid-section
   const firstHeader = kept.findIndex((l) => /^\[.+\]/.test(l));
   const clean = firstHeader > 0 ? kept.slice(firstHeader) : kept;
-  return `...(${omitted} earlier lines omitted)\n\n${clean.join("\n")}`;
+  // A dropped opener leaves the first kept fence line a bare closer, which
+  // would read as a new opener and swallow the rest of the summary. The
+  // pre-0.1.5 count is preserved (it counts from the raw tail window, not from
+  // the header-aligned clean slice); only removed closers are added.
+  const keptLines = dropOrphanClosers(lines.slice(0, lines.length - clean.length).join("\n"), clean);
+  const dropped = omitted + (clean.length - keptLines.length);
+  return `...(${dropped} earlier lines omitted)\n\n${keptLines.join("\n")}`;
 };
 
 export const RECALL_NOTE =
@@ -88,6 +95,15 @@ export const HISTORICAL_NOTE =
   "tool names describe calls or script structure. This brief follows effective edits; #N refers to saved originals, " +
   "which may differ. Session Goal is a condensed excerpt; recall the original for constraints. " +
   "Use vcc_recall: scan searches saved fields; read pages through long records.";
+
+/**
+ * One-line provenance reminder in front of the historical header (0.1.5). It
+ * is part of the header's 20% budget, not a new budget: the point is to keep
+ * agent-facing header text from being read as current state or as a diff.
+ * Word-for-word part of the interface; tests pin it.
+ */
+export const HEADER_CONTEXT_NOTE =
+  "Historical headers: user intent and recorded file operations, not current state or a verified diff.";
 
 /** Pre-0.1.3 note text, still stripped from summaries written by older versions. */
 export const LEGACY_HISTORICAL_NOTE =

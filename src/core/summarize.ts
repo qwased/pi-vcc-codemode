@@ -18,9 +18,11 @@ import {
   LEGACY_HISTORICAL_NOTE,
   LIMITED_HISTORY_NOTE,
   wrapLongLines,
+  HEADER_CONTEXT_NOTE,
 } from "./format";
 import { COMMAND_SEPARATOR, COMMANDS_PER_NAME } from "../extract/tracked-commands";
 import { selectRankedBriefBlocks, allocateBriefBudget, type BriefRankingOptions } from "./rank";
+import { closeUnclosedFences, dropOrphanClosers } from "./fences";
 import { buildBriefCandidates, type BriefCandidateOptions } from "./brief";
 import { briefHistoryHasCodemode, type BriefHistory } from "./brief-history";
 
@@ -81,6 +83,17 @@ export interface BriefPlanDetail {
   headerNames: string[];
   limited: boolean;
   counts: Record<string, number>;
+  /** Additive same-selection numbers (0.1.5); empty for the legacy path. */
+  metrics: Record<string, number>;
+  /** Per-target depth of the recent long texts (H1); numbers only. */
+  targets?: Array<{
+    sourceIndex?: number;
+    keepChars: number;
+    sourceChars: number;
+    folded: boolean;
+    headChars: number;
+    tailChars: number;
+  }>;
 }
 
 export interface RankedCompileResult {
@@ -254,8 +267,11 @@ const capBriefToLineBudget = (text: string, maxLines: number): string => {
   const kept = lines.slice(-maxLines);
   const firstHeader = kept.findIndex((l) => /^\[.+\]/.test(l));
   const clean = firstHeader > 0 ? kept.slice(firstHeader) : kept;
-  const omitted = lines.length - clean.length;
-  return `...(${omitted} earlier lines omitted)\n\n${clean.join("\n")}`;
+  // Same orphan-closer rule as capBrief: a line cap that dropped an opener
+  // must not leave its closer opening a new block.
+  const keptLines = dropOrphanClosers(lines.slice(0, lines.length - clean.length).join("\n"), clean);
+  const omitted = lines.length - keptLines.length;
+  return `...(${omitted} earlier lines omitted)\n\n${keptLines.join("\n")}`;
 };
 
 const mergeBriefTranscriptWithFreshBudget = (prev: string, fresh: string): string => {
@@ -396,19 +412,27 @@ const compileWithEffectiveHistory = (
     ? freshHeader
     : mergeHeaderParts(input.previousSummary ? stripKnownNotes(input.previousSummary) : undefined, freshHeader);
 
+  // A provenance reminder in front of the sections. It is not a section, it is
+  // not in HEADER_NAMES/details.sections, and it is charged to the header's own
+  // 20% share (not added on top of the budget). An empty header gets none.
+  const annotatedHeader = headerText ? `${HEADER_CONTEXT_NOTE}\n${headerText}` : "";
+
   // The note and its separator are fixed costs; the header gets at most 20%
   // of what remains, and unused quota returns to the body.
   const limited = history.limitedReason === "edited-checkpoint";
   const note = wrapLongLines(limited ? `${HISTORICAL_NOTE}\n${LIMITED_HISTORY_NOTE}` : HISTORICAL_NOTE);
   const headerCap = Math.max(0, Math.floor((budget - note.length - SEPARATOR.length) * 0.2));
-  const trimmedHeader = trimHeaderToBudget(wrapLongLines(headerText), headerCap);
+  const trimmedHeader = trimHeaderToBudget(wrapLongLines(annotatedHeader), headerCap);
   const header = trimmedHeader.text;
 
   const bodySeparator = header && candidates.length > 0 ? SEPARATOR.length : 0;
   const reservedChars = note.length + SEPARATOR.length + header.length + bodySeparator;
   const selection = allocateBriefBudget(candidates, { maxChars: budget, reservedChars });
 
-  const before = sectionLineCounts(headerText);
+  // The annotation line is not a section: sectionLineCounts only counts lines
+  // after a real "[Title]" line, so passing the annotated text keeps the audit
+  // list identical to the section list.
+  const before = sectionLineCounts(annotatedHeader);
   const after = sectionLineCounts(header);
   const headerSections = HEADER_NAMES
     .filter((name) => (before.get(name) ?? 0) > 0)
@@ -432,6 +456,8 @@ const compileWithEffectiveHistory = (
     headerSections,
     limited,
     counts: selection.counts,
+    metrics: selection.metrics ?? {},
+    ...(selection.targets ? { targets: selection.targets } : {}),
   };
 
   // No fake empty summary: the caller decides what to do with an explicit
@@ -440,7 +466,12 @@ const compileWithEffectiveHistory = (
 
   const parts = [header, selection.text].filter(Boolean);
   if (parts.length === 0) return { summary: "", detail };
-  return { summary: wrapLongLines(parts.join(SEPARATOR) + SEPARATOR + note), detail };
+  // Invariant guard: the assembled summary never ends inside a fence. The
+  // appended closer is a real cost, so it is charged to reservedChars to keep
+  // summary.length == usedChars + reservedChars.
+  const closed = closeUnclosedFences(wrapLongLines(parts.join(SEPARATOR) + SEPARATOR + note));
+  if (closed.appendedChars > 0) detail.reservedChars += closed.appendedChars;
+  return { summary: closed.text, detail };
 };
 
 const legacyDetail = (headerNames: string[]): BriefPlanDetail => ({
@@ -456,6 +487,7 @@ const legacyDetail = (headerNames: string[]): BriefPlanDetail => ({
   headerNames,
   limited: false,
   counts: {},
+  metrics: {},
 });
 
 export const compile = (input: CompileInput): string =>

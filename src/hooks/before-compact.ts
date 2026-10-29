@@ -505,6 +505,15 @@ export const resolveSmartKeepUserTurns = (opts: ResolveSmartKeepOptions): Resolv
   };
 };
 
+/**
+ * The new-path brief budget (§7.1): round(clamp(15 * blocks, 1100, 2000) * cpt).
+ * `blocks` is the normalize() block count of the effective history, never the
+ * message count. Exported so the details record and the budget tests share one
+ * formula.
+ */
+export const briefBudgetChars = (blockCount: number, charsPerToken: number): number =>
+  Math.round(Math.min(2000, Math.max(1100, 15 * blockCount)) * charsPerToken);
+
 const REASON_MESSAGES: Record<OwnCutCancelReason, string> = {
   no_live_messages: "pi-vcc: Nothing to compact (no live messages)",
   too_few_live_messages: "pi-vcc: Too few messages to compact",
@@ -776,12 +785,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       globalIndexById,
     });
     const briefHistoryBlockCount = normalize(briefHistory.messages as any, briefHistory.sourceIndices).length;
-    const briefBudgetChars = Math.round(
-      Math.min(
-        RANKED_BRIEF_CEILING_TOKENS,
-        Math.max(RANKED_BRIEF_BUDGET_TOKENS, RANKED_BRIEF_TOKENS_PER_BLOCK * briefHistoryBlockCount),
-      ) * tokenEstimate.charsPerToken,
-    );
+    const briefBudgetCharsValue = briefBudgetChars(briefHistoryBlockCount, tokenEstimate.charsPerToken);
     const historyBriefActive = briefHistoryHasCodemode(briefHistory);
 
     // Edited history: [Files And Changes] must not reuse the host aggregate,
@@ -808,7 +812,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         briefCharsPerBlock: Math.round(RANKED_BRIEF_TOKENS_PER_BLOCK * tokenEstimate.charsPerToken),
       },
       briefHistory,
-      briefBudgetChars,
+      briefBudgetChars: briefBudgetCharsValue,
     });
 
     const branchIds = branchEntries.map((e: any) => e.id);
@@ -852,7 +856,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         active: historyBriefActive,
         messages: briefHistory.messages.length,
         blocks: briefHistoryBlockCount,
-        budgetChars: briefBudgetChars,
+        budgetChars: briefBudgetCharsValue,
         hadCodemodeHistory: briefHistory.hadCodemodeHistory,
         hasContextEdits: briefHistory.hasContextEdits,
         limitedReason: briefHistory.limitedReason ?? null,
@@ -877,6 +881,18 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         ? {
             briefHistoryMessageCount: briefHistory.messages.length,
             ...(briefHistory.limitedReason ? { briefHistoryLimited: briefHistory.limitedReason } : {}),
+            // Only the new codemode compiler ran; legacyDetail never reaches here.
+            ...(detail.kind !== "legacy"
+              ? {
+                  briefBudget: {
+                    charsPerToken: tokenEstimate.charsPerToken,
+                    historyBlockCount: briefHistoryBlockCount,
+                    maxChars: detail.budgetChars,
+                    usedChars: detail.usedChars,
+                    reservedChars: detail.reservedChars,
+                  },
+                }
+              : {}),
           }
         : {}),
       reason,

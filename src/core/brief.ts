@@ -6,6 +6,7 @@ import { clip } from "./content";
 import { extractPath } from "./tool-args";
 import { collapseSkillText } from "./skill-collapse";
 import { graphemeStartAtOrBefore } from "./recall-full";
+import { closeUnclosedFences, fenceStateAtEnd, fenceStateBefore, parseFenceLine } from "./fences";
 
 const TRUNCATE_USER = 256;
 const SEGMENT_CLOSING_ASSISTANT_HEAD_WORDS = 120;
@@ -554,6 +555,20 @@ export interface BriefSelection {
   usedChars: number;
   reservedChars: number;
   counts: Record<string, number>;
+  /**
+   * Extra same-selection numbers (0.1.5). `counts` keeps its upstream keys and
+   * meaning; these are additive so a frozen counts-only fixture never shifts.
+   */
+  metrics?: Record<string, number>;
+  /** Per-target depth for the audit (H1); numbers only, never message text. */
+  targets?: Array<{
+    sourceIndex?: number;
+    keepChars: number;
+    sourceChars: number;
+    folded: boolean;
+    headChars: number;
+    tailChars: number;
+  }>;
 }
 
 const firstCharsEllipsis = (text: string, max: number): string =>
@@ -733,8 +748,15 @@ export const buildBriefCandidates = (
   return candidates;
 };
 
+/**
+ * Head/tail excerpt. The cut is by character count, so a fence can straddle
+ * it: close the head's open fence before the marker and reopen the tail's
+ * fence after it, so the marker (and everything after the excerpt) stays
+ * outside the code block. A source that never closes its fence is closed at
+ * the end instead of swallowing the rest of the summary.
+ */
 const excerptText = (text: string, keepChars: number, sourceIndex?: number): string => {
-  if (keepChars >= text.length) return text;
+  if (keepChars >= text.length) return closeUnclosedFences(text).text;
   const headChars = Math.ceil(Math.max(0, keepChars) / 2);
   const tailChars = Math.floor(Math.max(0, keepChars) / 2);
   const headEnd = graphemeStartAtOrBefore(text, headChars);
@@ -743,9 +765,19 @@ const excerptText = (text: string, keepChars: number, sourceIndex?: number): str
   const marker = sourceIndex != null
     ? `[omitted ${omitted} of ${text.length} chars; recall #${sourceIndex}]`
     : `[omitted ${omitted} of ${text.length} chars; source index unavailable]`;
-  const head = text.slice(0, headEnd).trimEnd();
+  let head = text.slice(0, headEnd).trimEnd();
   const tail = text.slice(tailStart).trimStart();
-  return head ? `${head}\n${marker}\n${tail}` : `${marker}\n${tail}`;
+  // The head starts at offset 0, so its own lines tell whether it ends open.
+  const headOpen = head ? fenceStateAtEnd(head) : null;
+  if (head && headOpen) head = `${head}\n${headOpen.char.repeat(headOpen.length)}`;
+  // The tail may start inside a fence opened in the omitted middle; restore
+  // the original opener line so its (kept) closer closes something.
+  const tailOpen = tail ? fenceStateBefore(text, tailStart) : null;
+  const tailBlock = tail
+    ? `${tailOpen ? `${tailOpen.raw}\n` : ""}${tail}`
+    : "";
+  const joined = head ? `${head}\n${marker}\n${tailBlock}` : `${marker}\n${tailBlock}`;
+  return closeUnclosedFences(joined).text;
 };
 
 const attachRef = (text: string, sourceIndex?: number): string => {
@@ -755,7 +787,14 @@ const attachRef = (text: string, sourceIndex?: number): string => {
   // the caller's own formatting and stay as written; appending to line 0 would
   // render an isolated " (#N)" line of our making.
   const firstTextLine = lines.findIndex((line) => line.trim().length > 0);
-  if (firstTextLine >= 0) lines[firstTextLine] = `${lines[firstTextLine]} (#${sourceIndex})`;
+  if (firstTextLine < 0) return text;
+  // A ref appended to a fence line lands in the info string, which pollutes
+  // the fence header (and can hide the ref from a reader). Keep the ref out
+  // of the fence: close the text, then add it as its own line.
+  if (parseFenceLine(lines[firstTextLine])) {
+    return `${closeUnclosedFences(text).text}\n(#${sourceIndex})`;
+  }
+  lines[firstTextLine] = `${lines[firstTextLine]} (#${sourceIndex})`;
   return lines.join("\n");
 };
 
@@ -772,12 +811,17 @@ export const renderToolCandidate = (candidate: BriefCandidate, version: "short" 
   const tool = candidate.tool!;
   const nav = version === "short" ? tool.shortNav : tool.normalNav;
   const ref = candidate.sourceIndex != null ? ` (#${candidate.sourceIndex})` : "";
-  const error = tool.observedError
+  // Neutral evidence: a paired saved result is navigation, not proof. A
+  // candidate with no result in the effective history gets no guessed number,
+  // and an observed error keeps its own wording (never "success").
+  const evidence = tool.observedError
     ? tool.resultIndex != null
       ? ` {error observed; result #${tool.resultIndex}}`
       : " {error observed}"
-    : "";
-  return `* ${tool.name}${nav ? ` ${nav}` : ""}${ref}${error}`;
+    : tool.resultIndex != null
+      ? ` {result #${tool.resultIndex}}`
+      : "";
+  return `* ${tool.name}${nav ? ` ${nav}` : ""}${ref}${evidence}`;
 };
 
 /** Range of saved-history refs, or null when any entry has no index. */
@@ -810,5 +854,11 @@ export const formatTextOmissionMarker = (
 export const renderTextOmissionMarker = (role: "user" | "assistant", omitted: BriefCandidate[]): string =>
   formatTextOmissionMarker(role, omitted.length, numericRange(omitted));
 
+/** Tool-marker text from a count and an optional numeric range (allocator reuse). */
+export const formatToolOmissionMarker = (
+  count: number,
+  range: { min: number; max: number } | null,
+): string => `* (${count} earlier tool-call entr${count === 1 ? "y" : "ies"} omitted${scanSuffix(range)})`;
+
 export const renderToolOmissionMarker = (omitted: BriefCandidate[]): string =>
-  `* (${omitted.length} earlier tool-call entr${omitted.length === 1 ? "y" : "ies"} omitted${scanSuffix(numericRange(omitted))})`;
+  formatToolOmissionMarker(omitted.length, numericRange(omitted));

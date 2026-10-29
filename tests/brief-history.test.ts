@@ -587,16 +587,24 @@ describe("compileRankedWithDetail: headerNames (P3)", () => {
       briefBudgetChars: budgetChars,
     });
 
-    // 1,200 chars leaves 20% for the header: three titles fit, the rest are dropped.
+    // 0.1.5: the 100-char provenance line is charged to the same 20% share, so
+    // 1,200 chars now fits one title instead of three (intentional interface
+    // change, see docs/patches/0.1.5-brief-navigation.md).
     const partial = at(1200);
-    expect(partial.detail.headerNames).toEqual(["Session Goal", "Files And Changes", "Commits"]);
-    // The audit list (pre-trim) still knows about all five merged sections,
-    // and Commits is title-only here: listed, but with no body lines.
+    expect(partial.detail.headerNames).toEqual(["Session Goal"]);
+    // The audit list (pre-trim) still knows about all five merged sections.
     expect(partial.detail.headerSections.map((s) => s.name)).toEqual([
       "Session Goal", "Files And Changes", "Commits", "Tracked Commands", "User Preferences",
     ]);
-    // Commits keeps its title but its item was trimmed: the body is gone.
-    expect(partial.summary.slice(partial.summary.indexOf("[Commits]"))).toStartWith("[Commits]\n...(");
+    // Session Goal keeps one item; the rest of its items are counted as omitted.
+    expect(partial.detail.headerSections[0]).toMatchObject({ name: "Session Goal", lines: 1, omitted: 1 });
+    expect(partial.summary).toContain("...(14 header lines omitted)");
+    // A larger header shows the same sections without the marker.
+    const full = at(2200);
+    expect(full.detail.headerNames).toEqual([
+      "Session Goal", "Files And Changes", "Commits", "Tracked Commands", "User Preferences",
+    ]);
+    expect(full.summary).not.toContain("header lines omitted)");
 
     // Too small for even the omission marker: nothing is rendered, nothing listed.
     const dropped = at(490);
@@ -604,7 +612,7 @@ describe("compileRankedWithDetail: headerNames (P3)", () => {
     expect(dropped.detail.headerNames).toEqual([]);
   });
 
-  test("T10: a title clipped mid-string is not reported as a section", () => {
+  test("T10: a clipped header line is not reported as a section", () => {
     const history = tinyHistory();
     const previous = [
       "[Session Goal]",
@@ -618,13 +626,18 @@ describe("compileRankedWithDetail: headerNames (P3)", () => {
       briefBudgetChars: budgetChars,
     });
 
+    // 0.1.5: the annotation is the first header line, so the narrow budget clips
+    // it instead of a title ("Historical …" + the counted marker). A partial
+    // line never names a section.
     const clipped = at(610);
     expect(clipped.detail.headerChars).toBeGreaterThan(0);
-    // "[Session Go…" is not a complete title, so it is not a section name.
     expect(clipped.detail.headerNames).toEqual([]);
+    expect(clipped.summary.startsWith("Historical ")).toBe(true);
 
-    const whole = at(620);
+    // A whole title line is reported once it survives.
+    const whole = at(1200);
     expect(whole.detail.headerNames).toEqual(["Session Goal"]);
+    expect(whole.summary.startsWith("Historical headers:")).toBe(true);
   });
 
   test("T11: a previous Commits section survives a merge with no fresh commits", () => {

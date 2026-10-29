@@ -8,7 +8,7 @@ import { join } from "node:path";
  * runtime (Bun/JSC) tolerates far more, so a runtime stress test cannot pin
  * the fix; the source guard can.
  */
-const SOURCES = ["src/core/rank.ts", "src/core/brief.ts"];
+const SOURCES = ["src/core/rank.ts", "src/core/brief.ts", "src/core/fences.ts"];
 
 describe("allocator avoids argument-spread reductions", () => {
   for (const file of SOURCES) {

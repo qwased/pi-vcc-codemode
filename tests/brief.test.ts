@@ -398,7 +398,8 @@ describe("new codemode brief candidates", () => {
     expect(user.sourceText).toBe("Please keep THIS exact wording");
     expect(renderTextCandidate(user, user.sourceText.length)).toBe("Please keep THIS exact wording (#0)");
     const tool = candidates.find((c) => c.role === "tool")!;
-    expect(renderToolCandidate(tool)).toBe("* Read \"src/a.ts\" (#1)");
+    // 0.1.5: a paired result adds neutral navigation (`{result #N}`).
+    expect(renderToolCandidate(tool)).toBe("* Read \"src/a.ts\" (#1) {result #2}");
   });
 
   it("uses goal/code navigation without the static name prefix and hides blocked text", () => {
@@ -414,7 +415,8 @@ describe("new codemode brief candidates", () => {
     expect(tool.tool!.normalNav).toBe("goal: 检查缓存");
     expect(tool.hint?.blocked).toBe("SECRET_BLOCKER");
     expect(tool.sourceText).not.toContain("SECRET_BLOCKER");
-    expect(renderToolCandidate(tool)).toBe("* codemode goal: 检查缓存 (#0)");
+    // A paired codemode result gets the same neutral navigation as a direct tool.
+    expect(renderToolCandidate(tool)).toBe("* codemode goal: 检查缓存 (#0) {result #0}");
     expect(tool.score).toBe(30 + 12 + 4 + 2); // mutation + recency + goal + blocked (last 25%)
   });
 
