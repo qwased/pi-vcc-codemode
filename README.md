@@ -180,6 +180,20 @@ Codemode sessions use a different brief. It opens with a single historical-navig
 
 `[Session Goal]` is a condensed excerpt, not the full task contract; use the saved original (or `vcc_recall`) for constraints.
 
+### Result navigation, recent-deep text and provenance
+
+Three 0.1.5 behaviors shape the codemode brief. None of them adds budget:
+
+- **A paired tool result is navigable, not certified.** Any final tool line whose result is in the effective history ends with a neutral ref: `{result #N}`, or `{error observed; result #N}` when the record was an error. No line says success, verified or passed; a result that was never saved, or that lives in the retained tail, gets no number. The suffix is measured before selection, so it costs brief space like any other text.
+- **The newest direct tool calls get a bounded chance.** Two channels share the tool quota: observed errors keep their 20% share, and the two most recent non-codemode calls (a direct read, edit or bash) get another 20%, so a codemode-heavy pool cannot erase the last verification step. Unused share returns to the pool; the rest still ranks by score. This is a preference, not a guarantee: if even the channel rows and the omission marker do not fit, the brief degrades and says so.
+- **The two newest long assistant texts can stay readable.** Within the newest six non-empty assistant texts, the two newest of at least 256 UTF-16 units keep up to 256 units instead of the 64-unit minimum. The depth comes from the same assistant quota, so older narration is folded to pay for it: in the 2,000-character control case, the two long texts went from 64/64 to 256/256 while 4-6 short rows were folded. It is a positional rule (newest, long enough), never a keyword rule, and it is not a claim that a report's middle numbers are visible.
+
+The header additionally opens with a one-line provenance reminder: `Historical headers: user intent and recorded file operations, not current state or a verified diff.` It is charged to the header's own 20% share, is absent when there is no header, and is never added by the non-codemode path. A header claim like "uncommitted" is quoted as recorded, never rewritten.
+
+The header and the brief body are also fence-safe: a head/tail excerpt closes an open code fence before the omission marker and reopens it for the tail, and a line cap that drops an opener also drops its orphan closer. The omission marker, section headers and the reading note therefore never disappear inside a code block.
+
+`details.briefBudget` records the actual `{charsPerToken, historyBlockCount, maxChars, usedChars, reservedChars}` of a codemode compaction. Records written by older versions do not have it, and no reader backfills it.
+
 A section only appears when it has something to say; a session with no git commits has no `[Commits]`. Ordinary tool calls in non-codemode sessions keep the upstream one-line format.
 
 | Section | Contents |

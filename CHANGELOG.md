@@ -2,6 +2,26 @@
 
 All notable changes to `pi-vcc-codemode` are documented in this file.
 
+## [0.1.5] - 2026-10-29
+
+### Added
+
+- **Neutral result navigation.** A final tool line whose paired result is in the effective history now ends with `{result #N}`; an observed error keeps `{error observed; result #N}` (or `{error observed}` with no saved result). No line says success, verified or passed, and a call with no saved result gets no number. The suffix is part of the measured cost in both the short and normal rendering.
+- **Bounded direct-tool priority.** The tool quota now has two 20% channels: observed errors keep theirs, and the two most recent non-codemode calls get a second one, so a codemode-heavy pool cannot erase the newest direct read/edit/bash. Unused share returns to the pool; contraction first downgrades normal rows to short, then deletes generic rows, then direct-channel rows, then error rows (lowest score first, ties by ascending order). This is a preference, not a guarantee.
+- **Recent-deep assistant text.** Within the newest six non-empty assistant texts, the two newest of at least 256 UTF-16 units keep up to 256 units instead of the 64-unit minimum, with an extra-render allowance of `min(384, quota/4)`. The depth is fixed before the first fold and recomputed per quota, and it is paid by folding older narration inside the same budget. In the 2,000-character control pool the two long reports went from 64/64 to 256/256 while 4–6 short rows were folded. The rule is positional, not keyword based.
+- **A provenance line in front of the header.** `Historical headers: user intent and recorded file operations, not current state or a verified diff.` It is part of the 20% header share (not extra budget), absent when there is no header, and never added by the non-codemode path. Old claims such as "uncommitted" are quoted as recorded, never rewritten.
+- **`details.briefBudget`** records the actual `charsPerToken`, `historyBlockCount` (normalize blocks, not messages), `maxChars`, `usedChars` and `reservedChars` of a codemode compaction. Older records have no such field and readers report "unknown" rather than backfilling one. `BriefSelection.metrics` / `detail.metrics` and the optional `detail.targets` add per-selection numbers (result navigation, tool channels, per-target depth); `counts` keys and meaning are unchanged.
+
+### Fixed
+
+- **A truncated code fence no longer swallows the rest of the summary.** Head/tail excerpts close an open fence before the omission marker and reopen it for the tail; a source that never closes its fence is closed at the end; `capBrief`/`capBriefToLineBudget` drop an orphan closer whose opener was cut; the final body and summary assembly carry an invariant guard. `attachRef` no longer appends `(#N)` into a fence's info string. Legacy output without fences is byte-identical to 0.1.4; the only non-codemode change is the orphan-closer fix.
+
+### Changed
+
+- **The frozen allocator fixture is now reviewed against a separate 0.1.5 diff list.** `tests/fixtures/allocator-golden.json` and its generator are untouched (same SHA-256), and 155 of its 242 records still match exactly. The 87 intentional changes (52 from the direct-tool channel, 32 from recent-deep text, 3 from both) are recorded with their baseline, new values, ref differences, fold counts and a reason in `tests/fixtures/allocator-golden-0.1.5.json`; the 0.1.5 test fails if the registered set and the actual changed set differ in either direction.
+- **Audit output carries the real budget and the new selection numbers.** `scripts/codemode-brief-audit.ts` reports `briefBudget` per compiled session, pooled result/channel metrics, a depth histogram for the recent-target proxy, and known/unknown counts for stored `briefBudget` records. Aggregates only: no message text is read or written.
+- **In the 1,200-character control case the header now fits one section instead of three.** That is the provenance line being charged to the existing 20% share, not a new budget; the full header returns at 2,200.
+
 ## [0.1.4] - 2026-10-28
 
 ### Changed
